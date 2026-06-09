@@ -6,7 +6,7 @@
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "concurrently \"vite\" \"wait-on http://localhost:8080 && tsc -p tsconfig.electron.json && node scripts/copy-preload.mjs && electron .\"",
-    "dev:backend": "py -3 -m uvicorn server:app --app-dir backend/NCIForge --host 127.0.0.1 --port 8765 --reload",
+    "dev:backend": "node scripts/run-backend.mjs",
     "bootstrap:win": "powershell -ExecutionPolicy Bypass -File scripts/bootstrap.ps1 -InstallNodeIfMissing",
     "build": "vite build && tsc -p tsconfig.electron.json && node scripts/copy-preload.mjs",
     "build:dev": "vite build --mode development",
