@@ -38,6 +38,22 @@ conda install -c conda-forge xtb openbabel
 
 If Python is not on `PATH`, the app tries `py -3` first.
 
+## Run The App
+
+Open **Command Prompt** or **PowerShell** in the project folder and run:
+
+```sh
+npm run dev
+```
+
+This starts the frontend, Electron, and the local backend.
+
+To run only the backend:
+
+```sh
+npm run dev:backend
+```
+
 ## Troubleshooting
 
 - If `npm run dev` fails, make sure `install.bat` finished successfully.
