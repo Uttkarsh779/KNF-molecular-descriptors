@@ -1,9 +1,11 @@
 import { ChildProcess, spawn, execSync } from 'child_process';
-import { app } from 'electron';
+import { createRequire } from 'module';
 import * as path from 'path';
 import * as fs from 'fs';
-import { net } from 'electron';
 import { fileURLToPath } from 'url';
+
+const _require = createRequire(import.meta.url);
+const { app } = _require('electron') as typeof import('electron');
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -19,7 +21,12 @@ function getBackendDir(): string {
 }
 
 function getPythonCommand(): { command: string; args: string[] } {
+  const backendDir = getBackendDir();
+  const venvPython = process.platform === 'win32'
+    ? path.join(backendDir, '.venv-nciforge', 'Scripts', 'python.exe')
+    : path.join(backendDir, '.venv-nciforge', 'bin', 'python');
   const candidates: Array<{ command: string; args: string[]; probe: string }> = [
+    ...(fs.existsSync(venvPython) ? [{ command: venvPython, args: [] as string[], probe: `"${venvPython}"` }] : []),
     { command: 'py', args: ['-3'], probe: 'py -3' },
     { command: 'python', args: [], probe: 'python' },
     { command: 'python3', args: [], probe: 'python3' },
@@ -42,6 +49,7 @@ export async function startBackend(): Promise<void> {
 
   const env: NodeJS.ProcessEnv = {
     ...process.env,
+    ELECTRON_RUN_AS_NODE: undefined,
     PATH: [
       'C:\\ProgramData\\xtb\\xtb-6.7.1\\bin',
       path.join(app.getPath('exe'), '..', 'resources', 'backend', 'tools', 'xtb', 'bin'),
@@ -64,12 +72,7 @@ export async function startBackend(): Promise<void> {
 
   backendProcess.stderr?.on('data', (d: Buffer) => {
     const line = d.toString().trim();
-    if (line) {
-      console.error(`[backend] ${line}`);
-      if (line.includes('Error') || line.includes('error')) {
-        console.error('[backend] ERROR DETECTED');
-      }
-    }
+    if (line) console.error(`[backend] ${line}`);
   });
 
   backendProcess.on('exit', (code) => {

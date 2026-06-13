@@ -1,14 +1,17 @@
-import { app, BrowserWindow, ipcMain, dialog } from 'electron';
+import { createRequire } from 'module';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { startBackend, stopBackend, getBackendUrl } from './backend.js';
+
+const _require = createRequire(import.meta.url);
+const { app, BrowserWindow, ipcMain, dialog } = _require('electron') as typeof import('electron');
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const isDev = !app.isPackaged;
 
-let mainWindow: BrowserWindow | null = null;
+let mainWindow: InstanceType<typeof BrowserWindow> | null = null;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -30,7 +33,7 @@ function createWindow() {
   });
 
   if (isDev) {
-    mainWindow.loadURL('http://localhost:8080');
+    mainWindow.loadURL('http://localhost:5173');
     mainWindow.webContents.openDevTools();
   } else {
     mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));

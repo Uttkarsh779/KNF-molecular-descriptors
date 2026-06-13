@@ -324,6 +324,8 @@ def _find_on_path(name: str) -> str | None:
         return found
     known_dirs = [
         r"C:\ProgramData\xtb\xtb-6.7.1\bin",
+        r"C:\Program Files\OpenBabel-3.1.1",
+        r"C:\Program Files (x86)\OpenBabel-3.1.1",
         r"C:\Users\Administrator\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\Scripts",
     ]
     for d in known_dirs:
@@ -636,7 +638,12 @@ async def websocket_endpoint(websocket: WebSocket):
                         })
 
                         result_files = []
-                        output_root = output_dir or str(UPLOAD_DIR)
+                        # Resolve output_root relative to UPLOAD_DIR (where nciforge runs)
+                        if output_dir:
+                            clean_output_dir = output_dir.lstrip("./\\").rstrip("/\\")
+                            output_root = str(UPLOAD_DIR / clean_output_dir) if clean_output_dir else str(UPLOAD_DIR)
+                        else:
+                            output_root = str(UPLOAD_DIR)
                         for root, _, files in os.walk(output_root):
                             for fn in files:
                                 if fn.endswith((".json", ".csv", ".txt", ".png")):
@@ -712,6 +719,8 @@ def _find_nciforge() -> str:
         "nciforge",
         "nciforge.exe",
         os.path.join(os.path.dirname(__file__), "venv", "Scripts", "nciforge.exe"),
+        os.path.join(os.path.dirname(__file__), ".venv-nciforge", "Scripts", "nciforge.exe"),
+        os.path.join(os.path.dirname(__file__), ".venv-nciforge", "bin", "nciforge"),
     ]
     for c in candidates:
         resolved = shutil.which(c)

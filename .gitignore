@@ -25,3 +25,20 @@ dist-electron
 *.sw?
 __pycache__/
 *.pyc
+*.pyo
+
+# Python virtual environments
+.venv*/
+venv/
+env/
+
+# Python build artifacts
+*.egg-info/
+build/
+.eggs/
+
+# Vite cache
+.vite/
+
+# OS files
+Thumbs.db

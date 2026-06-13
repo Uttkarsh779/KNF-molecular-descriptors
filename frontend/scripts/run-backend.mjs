@@ -1,12 +1,19 @@
 import { spawn, spawnSync } from 'child_process';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(__dirname, '..');
+const repoRoot = path.resolve(__dirname, '..', '..');
 const backendDir = path.join(repoRoot, 'backend', 'NCIForge');
 
+// Prefer the venv Python (has all backend packages installed)
+const venvPython = process.platform === 'win32'
+  ? path.join(backendDir, '.venv-nciforge', 'Scripts', 'python.exe')
+  : path.join(backendDir, '.venv-nciforge', 'bin', 'python');
+
 const candidates = [
+  ...(fs.existsSync(venvPython) ? [{ command: venvPython, args: [] }] : []),
   { command: 'py', args: ['-3'] },
   { command: 'python', args: [] },
   { command: 'python3', args: [] },

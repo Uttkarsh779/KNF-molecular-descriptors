@@ -47,10 +47,10 @@ if (-not $Npm) {
     throw "npm was not found. Install Node.js LTS or pass -InstallNodeIfMissing on a machine with winget."
 }
 
-Push-Location $RepoRoot
+Push-Location (Join-Path $RepoRoot "frontend")
 try {
     & $Npm install
-    & (Join-Path $RepoRoot "backend\NCIForge\scripts\install_nciforge.ps1")
 } finally {
     Pop-Location
 }
+& (Join-Path $RepoRoot "backend\NCIForge\scripts\install_nciforge.ps1")

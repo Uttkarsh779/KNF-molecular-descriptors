@@ -5,12 +5,11 @@
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
-    "dev": "concurrently \"vite\" \"wait-on http://localhost:8080 && tsc -p tsconfig.electron.json && node scripts/copy-preload.mjs && electron .\"",
+    "dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && tsc -p tsconfig.electron.json && node scripts/copy-preload.mjs && node scripts/launch-electron.mjs\"",
     "dev:backend": "node scripts/run-backend.mjs",
-    "bootstrap:win": "powershell -ExecutionPolicy Bypass -File scripts/bootstrap.ps1 -InstallNodeIfMissing",
     "build": "vite build && tsc -p tsconfig.electron.json && node scripts/copy-preload.mjs",
     "build:dev": "vite build --mode development",
-    "electron:dev": "concurrently -k \"vite\" \"wait-on http://localhost:8080 && tsc -p tsconfig.electron.json && node scripts/copy-preload.mjs && electron .\"",
+    "electron:dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && tsc -p tsconfig.electron.json && node scripts/copy-preload.mjs && electron .\"",
     "electron:build": "vite build && tsc -p tsconfig.electron.json && node scripts/copy-preload.mjs && electron-builder",
     "lint": "eslint .",
     "preview": "vite preview",
@@ -82,7 +81,7 @@
     "autoprefixer": "^10.4.21",
     "concurrently": "^10.0.0",
     "cross-env": "^10.1.0",
-    "electron": "^30.0.0",
+    "electron": "^30.5.1",
     "electron-builder": "^26.8.1",
     "eslint": "^9.32.0",
     "eslint-plugin-react-hooks": "^5.2.0",
@@ -106,7 +105,7 @@
     ],
     "extraResources": [
       {
-        "from": "backend/NCIForge",
+        "from": "../backend/NCIForge",
         "to": "backend",
         "filter": [
           "**/*"
