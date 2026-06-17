@@ -38,6 +38,39 @@ RESULT_HISTORY: list[dict] = []
 RUN_LOGS: dict[str, list[str]] = {}
 ACTIVE_PROCESSES: dict[str, asyncio.subprocess.Process] = {}
 STOP_REQUESTED: set[str] = set()
+ACTIVE_RUN_STATUSES = {"queued", "processing", "stop_requested", "finalizing"}
+
+
+def _utcnow_iso() -> str:
+    return datetime.utcnow().isoformat() + "Z"
+
+
+def _resolve_output_root(config: dict | None) -> Path:
+    output_dir = ""
+    if isinstance(config, dict):
+        output_dir = str(config.get("outputDirectory") or "")
+
+    if not output_dir:
+        return UPLOAD_DIR
+
+    path = Path(output_dir)
+    if path.is_absolute():
+        return path
+
+    clean_output_dir = output_dir.lstrip("./\\").rstrip("/\\")
+    return UPLOAD_DIR / clean_output_dir if clean_output_dir else UPLOAD_DIR
+
+
+def _remember_results(records: list[dict]) -> None:
+    existing = {
+        (str(record.get("runId")), str(record.get("fileName")))
+        for record in RESULT_HISTORY
+    }
+    for record in records:
+        key = (str(record.get("runId")), str(record.get("fileName")))
+        if key not in existing:
+            RESULT_HISTORY.append(record)
+            existing.add(key)
 
 
 def _discover_output_roots() -> list[Path]:
@@ -101,9 +134,9 @@ def _seed_history_from_disk() -> None:
                 "outputDirectory": str(root),
             },
             "files": [],
-            "createdAt": generated_at or datetime.utcnow().isoformat() + "Z",
-            "startedAt": generated_at or datetime.utcnow().isoformat() + "Z",
-            "completedAt": generated_at or datetime.utcnow().isoformat() + "Z",
+            "createdAt": generated_at or _utcnow_iso(),
+            "startedAt": generated_at or _utcnow_iso(),
+            "completedAt": generated_at or _utcnow_iso(),
             "totalFiles": total_files,
             "completedFiles": completed_files,
             "successFiles": completed_files,
@@ -112,7 +145,43 @@ def _seed_history_from_disk() -> None:
             "elapsedMs": 0,
             "throughput": 0,
         })
-        RESULT_HISTORY.extend(parsed_results)
+        _remember_results(parsed_results)
+
+
+def _refresh_run_from_outputs(run: dict) -> None:
+    run_id = str(run.get("id") or "")
+    if not run_id or run.get("status") not in ACTIVE_RUN_STATUSES:
+        return
+
+    process = ACTIVE_PROCESSES.get(run_id)
+    if process and process.returncode is None:
+        return
+
+    output_root = _resolve_output_root(run.get("config") if isinstance(run.get("config"), dict) else None)
+    parsed_results = _read_results_from_output_root(run_id, str(output_root))
+    if not parsed_results:
+        return
+
+    _remember_results(parsed_results)
+    completed_files = len(parsed_results)
+    total_files = int(run.get("totalFiles") or 0)
+    total_files = max(total_files, completed_files)
+
+    run["status"] = "completed"
+    run["totalFiles"] = total_files
+    run["completedFiles"] = max(int(run.get("completedFiles") or 0), completed_files)
+    run["successFiles"] = max(int(run.get("successFiles") or 0), completed_files)
+    run["failedFiles"] = int(run.get("failedFiles") or 0)
+    run["stoppedFiles"] = int(run.get("stoppedFiles") or 0)
+    run.setdefault("completedAt", _utcnow_iso())
+    RUN_LOGS.setdefault(run_id, []).append(
+        f"[{_utcnow_iso()}] Run status reconciled from output files."
+    )
+
+
+def _refresh_runs_from_outputs() -> None:
+    for run in RUN_HISTORY:
+        _refresh_run_from_outputs(run)
 
 
 def _status_from_metrics(snci: float, scdi: float) -> str:
@@ -421,12 +490,15 @@ async def get_file_content(filename: str):
 async def get_runs():
     if not RUN_HISTORY:
         _seed_history_from_disk()
+    _refresh_runs_from_outputs()
     return {"runs": RUN_HISTORY}
 
 
 @app.get("/api/runs/{run_id}")
 async def get_run(run_id: str):
     run = next((r for r in RUN_HISTORY if r["id"] == run_id), None)
+    if run:
+        _refresh_run_from_outputs(run)
     return {"run": run}
 
 
@@ -445,12 +517,14 @@ async def get_results():
 
     for run in RUN_HISTORY:
         run_id = run.get("id")
-        output_root = run.get("config", {}).get("outputDirectory") if isinstance(run.get("config"), dict) else None
-        if not run_id or not output_root:
+        if not run_id:
             continue
+        output_root = _resolve_output_root(run.get("config") if isinstance(run.get("config"), dict) else None)
         parsed = _read_results_from_output_root(str(run_id), str(output_root))
         for record in parsed:
             combined[(str(record.get("runId")), str(record.get("fileName")))] = record
+        if parsed:
+            _refresh_run_from_outputs(run)
 
     return {"results": list(combined.values())}
 
@@ -466,6 +540,7 @@ async def websocket_endpoint(websocket: WebSocket):
             if action == "start_run":
                 config = data.get("config", {})
                 filenames = data.get("files", [])
+                started_at = datetime.utcnow()
                 run_id = f"run-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{str(uuid.uuid4())[:8]}"
                 run_name = f"Run {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}"
                 run_record = {
@@ -474,8 +549,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     "status": "processing",
                     "config": config,
                     "files": [{"id": f"file-{i}", "name": name, "extension": Path(name).suffix, "size": 0, "valid": True} for i, name in enumerate(filenames)],
-                    "createdAt": datetime.utcnow().isoformat() + "Z",
-                    "startedAt": datetime.utcnow().isoformat() + "Z",
+                    "createdAt": started_at.isoformat() + "Z",
+                    "startedAt": started_at.isoformat() + "Z",
                     "totalFiles": len(filenames),
                     "completedFiles": 0,
                     "successFiles": 0,
@@ -500,10 +575,15 @@ async def websocket_endpoint(websocket: WebSocket):
                     if "nciforge" in missing:
                         issues.append("nciforge CLI is not installed")
 
+                    message = "Missing dependencies: " + "; ".join(issues) + \
+                              ". This system doesn't have the required computational chemistry tools installed."
+                    run_record["status"] = "failed"
+                    run_record["failedFiles"] = len(filenames)
+                    run_record["completedAt"] = _utcnow_iso()
+                    RUN_LOGS[run_id].append(message)
                     await websocket.send_json({
                         "type": "error",
-                        "message": "Missing dependencies: " + "; ".join(issues) +
-                                   ". This system doesn't have the required computational chemistry tools installed."
+                        "message": message
                     })
                     continue
 
@@ -523,9 +603,14 @@ async def websocket_endpoint(websocket: WebSocket):
                             input_files.append(str(found[0]))
 
                 if not input_files:
+                    message = "No valid input files found. Upload files first."
+                    run_record["status"] = "failed"
+                    run_record["failedFiles"] = len(filenames)
+                    run_record["completedAt"] = _utcnow_iso()
+                    RUN_LOGS[run_id].append(message)
                     await websocket.send_json({
                         "type": "error",
-                        "message": "No valid input files found. Upload files first."
+                        "message": message
                     })
                     continue
 
@@ -605,13 +690,25 @@ async def websocket_endpoint(websocket: WebSocket):
                 proc_env = os.environ.copy()
                 proc_env["PATH"] = f"{extra_path};{proc_env.get('PATH', '')}"
 
-                process = await asyncio.create_subprocess_exec(
-                    *args,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    cwd=str(UPLOAD_DIR),
-                    env=proc_env
-                )
+                try:
+                    process = await asyncio.create_subprocess_exec(
+                        *args,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        cwd=str(UPLOAD_DIR),
+                        env=proc_env
+                    )
+                except Exception as exc:
+                    message = f"Failed to start computation process: {exc}"
+                    run_record["status"] = "failed"
+                    run_record["failedFiles"] = len(filenames)
+                    run_record["completedAt"] = _utcnow_iso()
+                    RUN_LOGS[run_id].append(message)
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": message
+                    })
+                    continue
                 ACTIVE_PROCESSES[run_id] = process
                 STOP_REQUESTED.discard(run_id)
 
@@ -642,42 +739,41 @@ async def websocket_endpoint(websocket: WebSocket):
                     if run_id in STOP_REQUESTED:
                         run_record["status"] = "stopped"
                         run_record["stoppedFiles"] = len(filenames)
+                        run_record["completedAt"] = _utcnow_iso()
                         await websocket.send_json({
                             "type": "status",
                             "message": "Run stopped."
                         })
                     elif returncode == 0:
                         run_record["status"] = "completed"
-                        await websocket.send_json({
-                            "type": "completed",
-                            "message": "All files processed successfully.",
-                            "output_dir": str(UPLOAD_DIR)
-                        })
+                        run_record["completedAt"] = _utcnow_iso()
+                        run_record["elapsedMs"] = int((datetime.utcnow() - started_at).total_seconds() * 1000)
 
                         result_files = []
-                        # Resolve output_root relative to UPLOAD_DIR (where nciforge runs)
-                        if output_dir:
-                            clean_output_dir = output_dir.lstrip("./\\").rstrip("/\\")
-                            output_root = str(UPLOAD_DIR / clean_output_dir) if clean_output_dir else str(UPLOAD_DIR)
-                        else:
-                            output_root = str(UPLOAD_DIR)
+                        output_root = _resolve_output_root(config)
                         for root, _, files in os.walk(output_root):
                             for fn in files:
                                 if fn.endswith((".json", ".csv", ".txt", ".png")):
-                                    rel = os.path.relpath(os.path.join(root, fn), output_root)
+                                    rel = os.path.relpath(os.path.join(root, fn), str(output_root))
                                     result_files.append(rel)
                         if result_files:
-                            parsed_results = _read_results_from_output_root(run_id, output_root)
-                            RESULT_HISTORY.extend(parsed_results)
+                            parsed_results = _read_results_from_output_root(run_id, str(output_root))
+                            _remember_results(parsed_results)
                             run_record["completedFiles"] = len(parsed_results)
                             run_record["successFiles"] = len(parsed_results)
                             await websocket.send_json({
                                 "type": "results",
                                 "files": result_files
                             })
+                        await websocket.send_json({
+                            "type": "completed",
+                            "message": "All files processed successfully.",
+                            "output_dir": str(output_root)
+                        })
                     elif not run_id in STOP_REQUESTED:
                         run_record["status"] = "failed"
                         run_record["failedFiles"] = len(filenames)
+                        run_record["completedAt"] = _utcnow_iso()
                         await websocket.send_json({
                             "type": "error",
                             "message": f"Process exited with code {returncode}. Check logs above for details."
@@ -686,6 +782,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 except asyncio.TimeoutError:
                     process.kill()
                     run_record["status"] = "failed"
+                    run_record["failedFiles"] = len(filenames)
+                    run_record["completedAt"] = _utcnow_iso()
                     await websocket.send_json({
                         "type": "error",
                         "message": f"Process timed out after {TIMEOUT_SECONDS} seconds."
