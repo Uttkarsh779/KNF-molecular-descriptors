@@ -27,6 +27,9 @@ setup(
         'rich',
         'psutil',
         'rdkit',
+        'fastapi',
+        'python-multipart',
+        'uvicorn[standard]',
     ],
     extras_require={
         'torch-nci': ['torch'],
