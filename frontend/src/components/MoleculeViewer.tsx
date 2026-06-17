@@ -15,6 +15,7 @@ export const MoleculeViewer: React.FC<MoleculeViewerProps> = ({
 }) => {
   const viewerRef = useRef<HTMLDivElement>(null);
   const viewerInstance = useRef<any>(null);
+  const resizeObserverRef = useRef<ResizeObserver | null>(null);
 
   useEffect(() => {
     if (!viewerRef.current) return;
@@ -23,6 +24,13 @@ export const MoleculeViewer: React.FC<MoleculeViewerProps> = ({
         viewerInstance.current = $3Dmol.createViewer(viewerRef.current, {
             defaultcolors: $3Dmol.rasmolElementColors
         });
+        resizeObserverRef.current = new ResizeObserver(() => {
+          if (viewerInstance.current) {
+            viewerInstance.current.resize();
+            viewerInstance.current.render();
+          }
+        });
+        resizeObserverRef.current.observe(viewerRef.current);
     }
 
     const viewer = viewerInstance.current;
@@ -33,6 +41,18 @@ export const MoleculeViewer: React.FC<MoleculeViewerProps> = ({
     viewer.render();
 
   }, [data, format, style]);
+
+  useEffect(() => {
+    return () => {
+      if (resizeObserverRef.current) {
+        resizeObserverRef.current.disconnect();
+      }
+      if (viewerInstance.current) {
+        viewerInstance.current.clear();
+        viewerInstance.current = null;
+      }
+    };
+  }, []);
 
   return (
     <div

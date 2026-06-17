@@ -360,13 +360,15 @@ const Explorer = () => {
                         const d = payload[0].payload as any;
                         return (
                           <div className="rounded-lg border border-glass bg-zinc-950/95 p-3 text-xs shadow-xl max-w-xs backdrop-blur-md">
-                            <p className="font-semibold text-white truncate border-b border-glass/40 pb-1.5 mb-1.5">{d.fileName}</p>
+                            <p className="font-semibold text-white truncate border-b border-glass/40 pb-1.5 mb-1.5" title={d.fileName}>{d.fileName}</p>
                             <div className="space-y-1 font-mono text-muted-foreground text-[10px]">
                               <p>SNCI_Norm: <span className="text-white">{Number(d.x).toFixed(4)}</span></p>
                               <p>SCDI_Norm: <span className="text-white">{Number(d.y).toFixed(4)}</span></p>
+                              <p>SCDI Variance: <span className="text-white">{d.SCDI_variance != null ? Number(d.SCDI_variance).toFixed(6) : '-'}</span></p>
                               <p className="flex items-center gap-1 mt-1 pt-1 border-t border-white/5">
                                 Quadrant: <span className="px-1.5 py-0.5 rounded-full text-[9px]" style={{ backgroundColor: `${quadrantColors[d.quadrant as Quadrant]}22`, color: quadrantColors[d.quadrant as Quadrant] }}>{d.quadrant}</span>
                               </p>
+                              {d.KUID && <p className="pt-1 border-t border-white/5 truncate" title={d.KUID}>KUID: <span className="text-white">{d.KUID}</span></p>}
                             </div>
                           </div>
                         );
@@ -455,16 +457,39 @@ const Explorer = () => {
                   <span className="text-sm font-mono font-bold text-foreground block mt-0.5">{selected.SCDI_Norm.toFixed(4)}</span>
                 </div>
                 <div className="col-span-2 rounded-lg border border-zinc-800 bg-zinc-900/10 p-3 flex items-center justify-between font-mono">
-                  <div>
-                    <span className="text-[9px] text-muted-foreground uppercase font-semibold block">KUID Hash</span>
-                    <span className="text-xs text-white tracking-wide mt-0.5 block">{selected.KUID || 'N/A'}</span>
+                  <div className="min-w-0">
+                    <span className="text-[9px] text-muted-foreground uppercase font-semibold block">KUID Fingerprint</span>
+                    <span className="text-xs text-white tracking-wide mt-0.5 block break-all">{selected.KUID || 'N/A'}</span>
                   </div>
                   {selected.KUID_Cluster && (
-                    <span className="text-[9px] font-semibold px-2 py-0.5 rounded bg-primary/15 text-primary border border-primary/25 shrink-0">
+                    <span className="text-[9px] font-semibold px-2 py-0.5 rounded bg-primary/15 text-primary border border-primary/25 shrink-0 ml-2">
                       Cluster {selected.KUID_Cluster}
                     </span>
                   )}
                 </div>
+                {selected.KUID_Intensive && (
+                  <div className="col-span-2 rounded-lg border border-zinc-800 bg-zinc-900/10 p-3 font-mono">
+                    <span className="text-[9px] text-muted-foreground uppercase font-semibold block">KUID Intensive</span>
+                    <span className="text-xs text-white tracking-wide mt-0.5 block break-all">{selected.KUID_Intensive}</span>
+                    {selected.KUID_Intensive_Cluster && (
+                      <span className="text-[9px] font-semibold px-2 py-0.5 rounded bg-emerald-900/20 text-emerald-400 border border-emerald-900/30 inline-block mt-1.5">
+                        Cluster {selected.KUID_Intensive_Cluster}
+                      </span>
+                    )}
+                  </div>
+                )}
+                {selected.SCDI_variance != null && (
+                  <div className="rounded-lg border border-zinc-800 bg-zinc-900/10 p-3 font-mono">
+                    <span className="text-[9px] text-muted-foreground uppercase font-semibold block">SCDI Variance</span>
+                    <span className="text-sm font-mono font-bold text-foreground block mt-0.5">{selected.SCDI_variance.toFixed(6)}</span>
+                  </div>
+                )}
+                {selected.KUID_prefix2 && (
+                  <div className="rounded-lg border border-zinc-800 bg-zinc-900/10 p-3 font-mono">
+                    <span className="text-[9px] text-muted-foreground uppercase font-semibold block">KUID Prefix</span>
+                    <span className="text-xs text-white tracking-wide mt-0.5 block">{selected.KUID_prefix2} / {selected.KUID_prefix4} / {selected.KUID_prefix6}</span>
+                  </div>
+                )}
               </div>
 
               {/* 9-Dimensional Descriptor Gauges */}
