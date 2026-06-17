@@ -5,11 +5,11 @@
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
-    "dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && tsc -p tsconfig.electron.json && node scripts/copy-preload.mjs && node scripts/launch-electron.mjs\"",
+    "dev": "concurrently \"vite\" \"wait-on http://127.0.0.1:5173 && tsc -p tsconfig.electron.json && node scripts/copy-preload.mjs && node scripts/launch-electron.mjs\"",
     "dev:backend": "node scripts/run-backend.mjs",
     "build": "vite build && tsc -p tsconfig.electron.json && node scripts/copy-preload.mjs",
     "build:dev": "vite build --mode development",
-    "electron:dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && tsc -p tsconfig.electron.json && node scripts/copy-preload.mjs && electron .\"",
+    "electron:dev": "concurrently -k \"vite\" \"wait-on http://127.0.0.1:5173 && tsc -p tsconfig.electron.json && node scripts/copy-preload.mjs && electron .\"",
     "electron:build": "vite build && tsc -p tsconfig.electron.json && node scripts/copy-preload.mjs && electron-builder",
     "lint": "eslint .",
     "preview": "vite preview",

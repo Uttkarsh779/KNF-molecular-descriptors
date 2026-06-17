@@ -11,7 +11,7 @@ const appDir = path.resolve(__dirname, '..');
 const env = { ...process.env };
 delete env.ELECTRON_RUN_AS_NODE;
 
-const child = spawn(electronExe, [appDir], {
+const child = spawn(electronExe, [appDir, '--disable-gpu', '--disable-gpu-sandbox', '--no-sandbox'], {
   stdio: 'inherit',
   env,
 });

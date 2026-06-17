@@ -400,6 +400,23 @@ async def clear_files():
     return {"status": "cleared"}
 
 
+@app.get("/api/files/{filename}/content")
+async def get_file_content(filename: str):
+    safe_name = os.path.basename(filename)
+    if not safe_name or safe_name in (".", ".."):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    for root, _, files in os.walk(str(UPLOAD_DIR)):
+        if safe_name in files:
+            target_path = Path(root) / safe_name
+            try:
+                content = target_path.read_text(encoding="utf-8", errors="ignore")
+                return {"name": safe_name, "content": content}
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=str(e))
+    raise HTTPException(status_code=404, detail="File not found")
+
+
+
 @app.get("/api/runs")
 async def get_runs():
     if not RUN_HISTORY:

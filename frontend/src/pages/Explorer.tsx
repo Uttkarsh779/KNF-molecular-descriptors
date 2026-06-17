@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ZoomIn, ZoomOut, RotateCcw, CircleDot, Sparkles } from 'lucide-react';
+import { ZoomIn, ZoomOut, RotateCcw, Sparkles, CircleDot, HelpCircle, ChevronRight } from 'lucide-react';
 import {
   CartesianGrid,
   Label,
   ReferenceLine,
+  ReferenceArea,
   ResponsiveContainer,
   Scatter,
   ScatterChart,
@@ -13,6 +14,7 @@ import {
 } from 'recharts';
 import { EmptyState } from '@/components/shared/EmptyState';
 import { StatusBadge } from '@/components/shared/StatusBadge';
+import { MoleculeViewer } from '@/components/MoleculeViewer';
 import type { ResultRecord, Quadrant } from '@/types';
 
 function getApiBaseUrl(): string {
@@ -29,13 +31,24 @@ function getApiBaseUrl(): string {
 type Domain = [number, number];
 
 const quadrantColors: Record<Quadrant, string> = {
-  Q1: '#22d3ee',
-  Q2: '#a78bfa',
-  Q3: '#fb923c',
-  Q4: '#4ade80',
+  Q1: '#0ea5e9', // Sky Blue
+  Q2: '#6366f1', // Indigo
+  Q3: '#f59e0b', // Amber
+  Q4: '#10b981', // Emerald
+};
+
+const quadrantBgs: Record<Quadrant, string> = {
+  Q1: 'bg-[#0ea5e9]/10 text-[#0ea5e9] border-[#0ea5e9]/20',
+  Q2: 'bg-[#6366f1]/10 text-[#6366f1] border-[#6366f1]/20',
+  Q3: 'bg-[#f59e0b]/10 text-[#f59e0b] border-[#f59e0b]/20',
+  Q4: 'bg-[#10b981]/10 text-[#10b981] border-[#10b981]/20',
 };
 
 const fullDomain: Domain = [0, 1];
+
+const descriptorKeys: ('f1' | 'f2' | 'f3' | 'f4' | 'f5' | 'f6' | 'f7' | 'f8' | 'f9')[] = [
+  'f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'f9'
+];
 
 function clampDomain([min, max]: Domain, bounds: Domain): Domain {
   const lower = Math.max(bounds[0], min);
@@ -56,6 +69,41 @@ const Explorer = () => {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [xDomain, setXDomain] = useState<Domain>(fullDomain);
   const [yDomain, setYDomain] = useState<Domain>(fullDomain);
+
+  const [refAreaLeft, setRefAreaLeft] = useState<number | null>(null);
+  const [refAreaRight, setRefAreaRight] = useState<number | null>(null);
+  const [refAreaTop, setRefAreaTop] = useState<number | null>(null);
+  const [refAreaBottom, setRefAreaBottom] = useState<number | null>(null);
+
+  const handleMouseDown = useCallback((e: any) => {
+    if (e && e.xValue != null && e.yValue != null) {
+      setRefAreaLeft(e.xValue);
+      setRefAreaTop(e.yValue);
+    }
+  }, []);
+
+  const handleMouseMove = useCallback((e: any) => {
+    if (refAreaLeft != null && e && e.xValue != null && e.yValue != null) {
+      setRefAreaRight(e.xValue);
+      setRefAreaBottom(e.yValue);
+    }
+  }, [refAreaLeft]);
+
+  const handleMouseUp = useCallback(() => {
+    if (refAreaLeft != null && refAreaRight != null && refAreaLeft !== refAreaRight) {
+      const [left, right] = [refAreaLeft, refAreaRight].sort((a, b) => a - b);
+      const [bottom, top] = [refAreaTop!, refAreaBottom!].sort((a, b) => a - b);
+      setXDomain([left, right]);
+      setYDomain([bottom, top]);
+    }
+    setRefAreaLeft(null);
+    setRefAreaRight(null);
+    setRefAreaTop(null);
+    setRefAreaBottom(null);
+  }, [refAreaLeft, refAreaRight, refAreaTop, refAreaBottom]);
+
+  const [structureData, setStructureData] = useState<string | null>(null);
+  const [structureLoading, setStructureLoading] = useState(false);
 
   const fetchResults = useCallback(async () => {
     try {
@@ -116,6 +164,39 @@ const Explorer = () => {
     setSelectedId(prev => (prev && data.some(d => d.id === prev) ? prev : data[0].id));
   }, [data, bounds]);
 
+  // Fetch 3D Structure content when selected changes
+  useEffect(() => {
+    if (!selected) {
+      setStructureData(null);
+      return;
+    }
+    let activeFetch = true;
+    setStructureLoading(true);
+    setStructureData(null);
+
+    fetch(`${getApiBaseUrl()}/api/files/${selected.fileName}/content`)
+      .then(res => {
+        if (!res.ok) throw new Error('Structure not found');
+        return res.json();
+      })
+      .then(data => {
+        if (activeFetch) {
+          setStructureData(data.content);
+          setStructureLoading(false);
+        }
+      })
+      .catch(() => {
+        if (activeFetch) {
+          setStructureData(null);
+          setStructureLoading(false);
+        }
+      });
+
+    return () => {
+      activeFetch = false;
+    };
+  }, [selected]);
+
   const stats = useMemo(() => {
     const counts: Record<Quadrant, number> = { Q1: 0, Q2: 0, Q3: 0, Q4: 0 };
     data.forEach(d => { counts[d.quadrant] += 1; });
@@ -125,13 +206,26 @@ const Explorer = () => {
   const medianX = useMemo(() => {
     const xs = data.map(d => d.x).sort((a, b) => a - b);
     const mid = Math.floor(xs.length / 2);
-    return xs.length ? (xs.length % 2 ? xs[mid] : (xs[mid - 1] + xs[mid]) / 2) : 0;
+    return xs.length ? (xs.length % 2 ? xs[mid] : (xs[mid - 1] + xs[mid]) / 2) : 0.5;
   }, [data]);
 
   const medianY = useMemo(() => {
     const ys = data.map(d => d.y).sort((a, b) => a - b);
     const mid = Math.floor(ys.length / 2);
-    return ys.length ? (ys.length % 2 ? ys[mid] : (ys[mid - 1] + ys[mid]) / 2) : 0;
+    return ys.length ? (ys.length % 2 ? ys[mid] : (ys[mid - 1] + ys[mid]) / 2) : 0.5;
+  }, [data]);
+
+  const maxDescriptorVal = useMemo(() => {
+    let maxVal = 0.1;
+    data.forEach(r => {
+      descriptorKeys.forEach(k => {
+        const val = r[k];
+        if (typeof val === 'number' && val > maxVal) {
+          maxVal = val;
+        }
+      });
+    });
+    return maxVal;
   }, [data]);
 
   const zoom = (direction: 'in' | 'out') => {
@@ -154,11 +248,11 @@ const Explorer = () => {
       <circle
         cx={cx}
         cy={cy}
-        r={isSelected ? 7 : 4}
+        r={isSelected ? 7 : 4.5}
         fill={quadrantColors[payload.quadrant as Quadrant]}
-        stroke={isSelected ? 'white' : 'rgba(255,255,255,0.2)'}
-        strokeWidth={isSelected ? 2 : 1}
-        style={{ cursor: 'pointer' }}
+        stroke={isSelected ? '#ffffff' : 'rgba(255,255,255,0.15)'}
+        strokeWidth={isSelected ? 2.5 : 1}
+        className="transition-all duration-150 cursor-pointer"
         onClick={(e) => {
           e.stopPropagation();
           setSelectedId(payload.id);
@@ -168,89 +262,128 @@ const Explorer = () => {
   };
 
   return (
-    <div className="p-6 lg:p-8 space-y-6 max-w-[1600px]">
+    <div className="p-6 lg:p-8 space-y-6 max-w-[1600px] animate-fade-in-up">
       <header className="space-y-1">
-        <div className="flex items-center gap-2 text-primary">
-          <Sparkles className="w-4 h-4" />
-          <span className="text-xs font-medium uppercase tracking-wider">Interactive Explorer</span>
+        <div className="flex items-center gap-2 text-primary font-mono tracking-widest text-[9px] uppercase">
+          <Sparkles className="w-3.5 h-3.5" />
+          Interactive Visualizer
         </div>
-        <h1 className="text-2xl font-display font-bold text-foreground">Scatter Explorer</h1>
-        <p className="text-sm text-muted-foreground">Zoom the cloud, click a point, and inspect every field on the right.</p>
+        <h1 className="text-3xl font-display font-bold text-foreground tracking-tight">
+          Scatter <span className="text-gradient">Explorer</span>
+        </h1>
+        <p className="text-xs text-muted-foreground">Compare structure-activity descriptors on a 2D quadrant space</p>
       </header>
 
-      <div className="flex flex-wrap items-center gap-2">
-        <button onClick={() => zoom('in')} className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-secondary text-secondary-foreground text-sm hover:bg-secondary/80 transition-colors">
-          <ZoomIn className="w-4 h-4" /> Zoom In
-        </button>
-        <button onClick={() => zoom('out')} className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-secondary text-secondary-foreground text-sm hover:bg-secondary/80 transition-colors">
-          <ZoomOut className="w-4 h-4" /> Zoom Out
-        </button>
-        <button onClick={resetZoom} className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-secondary text-secondary-foreground text-sm hover:bg-secondary/80 transition-colors">
-          <RotateCcw className="w-4 h-4" /> Reset
-        </button>
-        <div className="ml-auto text-xs text-muted-foreground inline-flex items-center gap-2">
-          <CircleDot className="w-3 h-3" /> Click a point to inspect it
+      {/* Controls Bar */}
+      <div className="flex flex-wrap items-center justify-between gap-4 p-4 rounded-lg border border-glass bg-card/40">
+        <div className="flex items-center gap-2">
+          <button onClick={() => zoom('in')} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-zinc-800 bg-zinc-900/20 text-xs text-foreground font-semibold hover:bg-zinc-900/50 transition-colors">
+            <ZoomIn className="w-3.5 h-3.5" /> Zoom In
+          </button>
+          <button onClick={() => zoom('out')} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-zinc-800 bg-zinc-900/20 text-xs text-foreground font-semibold hover:bg-zinc-900/50 transition-colors">
+            <ZoomOut className="w-3.5 h-3.5" /> Zoom Out
+          </button>
+          <button onClick={resetZoom} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-zinc-800 bg-zinc-900/20 text-xs text-foreground font-semibold hover:bg-zinc-900/50 transition-colors">
+            <RotateCcw className="w-3.5 h-3.5" /> Reset Layout
+          </button>
+        </div>
+        <div className="text-[10px] text-muted-foreground inline-flex items-center gap-2 font-mono">
+          <CircleDot className="w-3 h-3 text-primary animate-pulse" /> Click points in the cloud to view structural profiles
         </div>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.45fr)_420px] gap-6 items-start">
-        <div className="rounded-xl border border-border bg-card p-4 min-h-[720px]">
+      {/* Grid Canvas + Inspector Layout */}
+      <div className="grid grid-cols-1 xl:grid-cols-[1fr_420px] gap-6 items-start">
+        {/* Scatter Plot Card */}
+        <div className="rounded-lg border border-glass bg-card/45 p-5 min-h-[700px] flex flex-col justify-between">
           {loading ? (
-            <div className="h-[680px] flex items-center justify-center text-sm text-muted-foreground">Loading plot...</div>
+            <div className="h-[620px] flex flex-col items-center justify-center text-xs text-muted-foreground gap-2">
+              <span className="w-5 h-5 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+              Generating scatter chart...
+            </div>
           ) : data.length === 0 ? (
-            <EmptyState title="No points to plot" description="Run a computation that produces successful results first." />
+            <EmptyState title="No plot data available" description="Run a descriptor analysis on molecular structures first." />
           ) : (
             <>
-              <div className="flex flex-wrap gap-3 text-xs text-muted-foreground mb-3">
+              {/* Region Counters Legend */}
+              <div className="flex flex-wrap gap-4 text-xs text-muted-foreground border-b border-glass pb-4 mb-4">
                 {(['Q1', 'Q2', 'Q3', 'Q4'] as const).map(q => (
-                  <span key={q} className="inline-flex items-center gap-1.5">
+                  <span key={q} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/[0.03] border border-glass/40">
                     <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: quadrantColors[q] }} />
-                    {q}: <span className="font-mono text-foreground">{stats[q]}</span>
+                    <span className="font-semibold text-foreground/80">{q}</span>
+                    <span className="font-mono text-white pl-1">{stats[q]}</span>
                   </span>
                 ))}
-                <span className="ml-auto font-mono">Points: {data.length}</span>
+                <span className="ml-auto font-mono text-foreground/75 inline-flex items-center">
+                  Total Compounds: {data.length}
+                </span>
               </div>
-              <div className="h-[640px]">
+
+              {/* Chart Core Viewport */}
+              <div className="h-[580px] w-full relative z-0">
                 <ResponsiveContainer width="100%" height="100%">
-                  <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 8 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(220, 20%, 16%)" />
+                  <ScatterChart 
+                    margin={{ top: 20, right: 20, bottom: 20, left: 8 }}
+                    onMouseDown={handleMouseDown}
+                    onMouseMove={handleMouseMove}
+                    onMouseUp={handleMouseUp}
+                    onDoubleClick={resetZoom}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255, 255, 255, 0.05)" />
                     <XAxis
                       type="number"
                       dataKey="x"
                       domain={xDomain}
-                      stroke="hsl(215, 15%, 50%)"
-                      fontSize={11}
+                      stroke="rgba(255, 255, 255, 0.3)"
+                      fontSize={10}
                       fontFamily="JetBrains Mono"
+                      tickLine={false}
                     >
-                      <Label value="SNCI_Norm" position="bottom" offset={10} style={{ fill: 'hsl(215, 15%, 50%)', fontSize: 12, fontFamily: 'Space Grotesk' }} />
+                      <Label value="Normalized Non-Covalent Density (SNCI_Norm)" position="bottom" offset={10} style={{ fill: 'rgba(255, 255, 255, 0.5)', fontSize: 11, fontFamily: 'Space Grotesk' }} />
                     </XAxis>
                     <YAxis
                       type="number"
                       dataKey="y"
                       domain={yDomain}
-                      stroke="hsl(215, 15%, 50%)"
-                      fontSize={11}
+                      stroke="rgba(255, 255, 255, 0.3)"
+                      fontSize={10}
                       fontFamily="JetBrains Mono"
+                      tickLine={false}
                     >
-                      <Label value="SCDI_NORM" angle={-90} position="insideLeft" offset={10} style={{ fill: 'hsl(215, 15%, 50%)', fontSize: 12, fontFamily: 'Space Grotesk' }} />
+                      <Label value="Normalized Spatial Intensity (SCDI_Norm)" angle={-90} position="insideLeft" offset={10} style={{ fill: 'rgba(255, 255, 255, 0.5)', fontSize: 11, fontFamily: 'Space Grotesk' }} />
                     </YAxis>
-                    <ReferenceLine x={medianX} stroke="hsl(215, 15%, 35%)" strokeDasharray="6 4" />
-                    <ReferenceLine y={medianY} stroke="hsl(215, 15%, 35%)" strokeDasharray="6 4" />
+                    <ReferenceLine x={medianX} stroke="rgba(255, 255, 255, 0.15)" strokeDasharray="6 4" />
+                    <ReferenceLine y={medianY} stroke="rgba(255, 255, 255, 0.15)" strokeDasharray="6 4" />
                     <Tooltip
                       content={({ payload }) => {
                         if (!payload?.[0]) return null;
                         const d = payload[0].payload as any;
                         return (
-                          <div className="rounded-lg border border-border bg-popover p-3 text-xs shadow-lg max-w-xs">
-                            <p className="font-medium text-foreground mb-1">{d.fileName}</p>
-                            <p className="text-muted-foreground">Quadrant: <span className="font-mono text-foreground">{d.quadrant}</span></p>
-                            <p className="text-muted-foreground">SNCI_Norm: <span className="font-mono text-foreground">{Number(d.x).toFixed(4)}</span></p>
-                            <p className="text-muted-foreground">SCDI_Norm: <span className="font-mono text-foreground">{Number(d.y).toFixed(4)}</span></p>
+                          <div className="rounded-lg border border-glass bg-zinc-950/95 p-3 text-xs shadow-xl max-w-xs backdrop-blur-md">
+                            <p className="font-semibold text-white truncate border-b border-glass/40 pb-1.5 mb-1.5">{d.fileName}</p>
+                            <div className="space-y-1 font-mono text-muted-foreground text-[10px]">
+                              <p>SNCI_Norm: <span className="text-white">{Number(d.x).toFixed(4)}</span></p>
+                              <p>SCDI_Norm: <span className="text-white">{Number(d.y).toFixed(4)}</span></p>
+                              <p className="flex items-center gap-1 mt-1 pt-1 border-t border-white/5">
+                                Quadrant: <span className="px-1.5 py-0.5 rounded-full text-[9px]" style={{ backgroundColor: `${quadrantColors[d.quadrant as Quadrant]}22`, color: quadrantColors[d.quadrant as Quadrant] }}>{d.quadrant}</span>
+                              </p>
+                            </div>
                           </div>
                         );
                       }}
                     />
                     <Scatter data={data} shape={renderDot} />
+                    {refAreaLeft != null && refAreaRight != null ? (
+                      <ReferenceArea
+                        x1={refAreaLeft}
+                        x2={refAreaRight}
+                        y1={refAreaTop!}
+                        y2={refAreaBottom!}
+                        strokeOpacity={0.3}
+                        fill="rgba(255, 255, 255, 0.08)"
+                        stroke="#ffffff"
+                      />
+                    ) : null}
                   </ScatterChart>
                 </ResponsiveContainer>
               </div>
@@ -258,41 +391,105 @@ const Explorer = () => {
           )}
         </div>
 
-        <aside className="rounded-xl border border-border bg-card p-4 sticky top-6">
+        {/* Selected Compound Profile Inspector Sidebar */}
+        <aside className="rounded-lg border border-glass bg-card/45 p-5 space-y-6 max-h-[80vh] overflow-y-auto sticky top-8">
           {!selected ? (
-            <EmptyState title="No point selected" description="Click any point on the scatter plot to inspect its full record." />
+            <EmptyState title="Select a Point" description="Select any coordinate point in the scatter cloud to load its 3D model and descriptor details." />
           ) : (
-            <div className="space-y-4">
-              <div>
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <h2 className="text-lg font-display font-bold text-foreground truncate">{selected.fileName}</h2>
-                    <p className="text-xs text-muted-foreground font-mono">{selected.runId}</p>
-                  </div>
+            <div className="space-y-5">
+              <div className="border-b border-glass pb-4">
+                <span className="text-[9px] text-primary font-mono tracking-widest uppercase block">Selected Descriptor</span>
+                <h2 className="text-xl font-display font-bold text-foreground truncate mt-0.5" title={selected.fileName}>
+                  {selected.fileName}
+                </h2>
+                <div className="flex items-center gap-2 mt-2">
+                  <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-semibold border ${quadrantBgs[selected.quadrant]}`}>
+                    Quadrant {selected.quadrant}
+                  </span>
                   <StatusBadge status={selected.status} />
                 </div>
-                <div className="mt-2 inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-xs font-medium" style={{ backgroundColor: `${quadrantColors[selected.quadrant]}22`, color: quadrantColors[selected.quadrant] }}>
-                  Quadrant {selected.quadrant}
+              </div>
+
+              {/* 3D Structure Viewer Block */}
+              <div className="relative rounded-lg border border-zinc-800 bg-zinc-950 overflow-hidden aspect-video flex flex-col items-center justify-center min-h-[180px]">
+                {structureLoading ? (
+                  <div className="flex flex-col items-center gap-2 text-muted-foreground text-[10px] font-mono">
+                    <span className="w-4 h-4 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+                    Generating 3D model...
+                  </div>
+                ) : structureData ? (
+                  <div className="w-full h-full relative z-0">
+                    <MoleculeViewer 
+                      data={structureData} 
+                      format={selected.fileName.split('.').pop()?.toLowerCase() || 'xyz'}
+                      style={{ stick: { radius: 0.18, colorscheme: 'Jmol' } }}
+                    />
+                    <div className="absolute bottom-2 right-2 z-10 inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-black/60 text-[9px] text-muted-foreground border border-glass pointer-events-none">
+                      <HelpCircle className="w-3 h-3" /> Click & Drag to Rotate
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-center p-4 text-[10px] text-muted-foreground">
+                    <span className="font-semibold block text-white/80">3D Visualizer Offline</span>
+                    <span>Coordinates not cached locally.</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Normalized Metrics grid */}
+              <div className="grid grid-cols-2 gap-3 border-t border-glass pt-4">
+                <div className="rounded-lg border border-zinc-800 bg-zinc-900/10 p-3">
+                  <span className="text-[9px] text-muted-foreground uppercase font-semibold block">SNCI Raw</span>
+                  <span className="text-sm font-mono font-bold text-foreground block mt-0.5">{selected.SNCI.toFixed(4)}</span>
+                </div>
+                <div className="rounded-lg border border-zinc-800 bg-zinc-900/10 p-3">
+                  <span className="text-[9px] text-muted-foreground uppercase font-semibold block">SCDI Raw</span>
+                  <span className="text-sm font-mono font-bold text-foreground block mt-0.5">{selected.SCDI.toFixed(4)}</span>
+                </div>
+                <div className="rounded-lg border border-zinc-800 bg-zinc-900/10 p-3">
+                  <span className="text-[9px] text-muted-foreground uppercase font-semibold block">SNCI Norm</span>
+                  <span className="text-sm font-mono font-bold text-foreground block mt-0.5">{selected.SNCI_Norm.toFixed(4)}</span>
+                </div>
+                <div className="rounded-lg border border-zinc-800 bg-zinc-900/10 p-3">
+                  <span className="text-[9px] text-muted-foreground uppercase font-semibold block">SCDI Norm</span>
+                  <span className="text-sm font-mono font-bold text-foreground block mt-0.5">{selected.SCDI_Norm.toFixed(4)}</span>
+                </div>
+                <div className="col-span-2 rounded-lg border border-zinc-800 bg-zinc-900/10 p-3 flex items-center justify-between font-mono">
+                  <div>
+                    <span className="text-[9px] text-muted-foreground uppercase font-semibold block">KUID Hash</span>
+                    <span className="text-xs text-white tracking-wide mt-0.5 block">{selected.KUID || 'N/A'}</span>
+                  </div>
+                  {selected.KUID_Cluster && (
+                    <span className="text-[9px] font-semibold px-2 py-0.5 rounded bg-primary/15 text-primary border border-primary/25 shrink-0">
+                      Cluster {selected.KUID_Cluster}
+                    </span>
+                  )}
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <Stat label="SNCI" value={selected.SNCI.toFixed(4)} />
-                <Stat label="SCDI" value={selected.SCDI.toFixed(4)} />
-                <Stat label="Variance" value={selected.SCDI_variance.toExponential(2)} />
-                <Stat label="SNCI_Norm" value={selected.SNCI_Norm.toFixed(4)} />
-                <Stat label="SCDI_Norm" value={selected.SCDI_Norm.toFixed(4)} />
-                <Stat label="f2_defined" value={selected.f2_defined ? 'Yes' : 'No'} />
-              </div>
-
-              <div className="rounded-lg border border-border p-3 max-h-[480px] overflow-y-auto">
-                <div className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs font-mono">
-                  {Object.entries(selected).map(([key, value]) => {
-                    if (['id', 'runId', 'fileName', 'status', 'quadrant'].includes(key)) return null;
+              {/* 9-Dimensional Descriptor Gauges */}
+              <div className="space-y-3 border-t border-glass pt-4">
+                <h3 className="text-xs font-semibold text-foreground uppercase tracking-wider">Fingerprint Feature Grid</h3>
+                <div className="grid grid-cols-3 gap-2">
+                  {descriptorKeys.map(k => {
+                    const val = selected[k];
+                    const ratio = typeof val === 'number' ? val / maxDescriptorVal : 0;
                     return (
-                      <div key={key} className="col-span-2 grid grid-cols-[140px_minmax(0,1fr)] gap-2 py-1 border-b border-border/50 last:border-b-0">
-                        <span className="text-muted-foreground break-words">{key}</span>
-                        <span className="text-foreground break-words text-right">{typeof value === 'number' ? value.toString() : String(value ?? '-')}</span>
+                      <div key={k} className="rounded-lg border border-zinc-800 bg-zinc-900/10 p-2 flex flex-col justify-between">
+                        <span className="text-[9px] font-mono text-muted-foreground font-semibold">{k}</span>
+                        <span className="text-xs font-mono font-bold text-foreground break-all mt-1">
+                          {typeof val === 'number' ? val.toFixed(4) : '-'}
+                        </span>
+                        {/* Micro progress indicator */}
+                        <div className="w-full bg-zinc-850 h-[3px] rounded-full overflow-hidden mt-1.5">
+                          <div 
+                            className="h-full" 
+                            style={{ 
+                              width: `${ratio * 100}%`,
+                              backgroundColor: quadrantColors[selected.quadrant]
+                            }} 
+                          />
+                        </div>
                       </div>
                     );
                   })}
@@ -305,14 +502,5 @@ const Explorer = () => {
     </div>
   );
 };
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-lg border border-border bg-muted/40 px-3 py-2">
-      <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</p>
-      <p className="text-sm font-mono text-foreground break-all">{value}</p>
-    </div>
-  );
-}
 
 export default Explorer;

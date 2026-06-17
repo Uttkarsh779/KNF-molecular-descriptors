@@ -47,22 +47,29 @@ export async function startBackend(): Promise<void> {
   const backendDir = getBackendDir();
   const python = getPythonCommand();
 
+  const pathKey = Object.keys(process.env).find(k => k.toLowerCase() === 'path') || 'PATH';
+  const originalPath = process.env[pathKey] || '';
+
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     ELECTRON_RUN_AS_NODE: undefined,
-    PATH: [
-      'C:\\ProgramData\\xtb\\xtb-6.7.1\\bin',
-      path.join(app.getPath('exe'), '..', 'resources', 'backend', 'tools', 'xtb', 'bin'),
-      'C:\\Users\\Administrator\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python311\\Scripts',
-      process.env.PATH || '',
-    ].join(';'),
   };
+  env[pathKey] = [
+    'C:\\ProgramData\\xtb\\xtb-6.7.1\\bin',
+    path.join(app.getPath('exe'), '..', 'resources', 'backend', 'tools', 'xtb', 'bin'),
+    'C:\\Users\\Administrator\\AppData\\Local\\Packages\\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\\LocalCache\\local-packages\\Python311\\Scripts',
+    originalPath,
+  ].join(';');
 
   backendProcess = spawn(python.command, [...python.args, '-m', 'uvicorn', 'server:app', '--host', '127.0.0.1', '--port', String(BACKEND_PORT)], {
     cwd: backendDir,
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
+  });
+
+  backendProcess.on('error', (err) => {
+    console.error('[backend] failed to start process:', err);
   });
 
   backendProcess.stdout?.on('data', (d: Buffer) => {
@@ -87,7 +94,10 @@ async function waitForBackend(): Promise<void> {
   const maxRetries = 30;
   for (let i = 0; i < maxRetries; i++) {
     try {
-      const res = await fetch(`http://127.0.0.1:${BACKEND_PORT}/api/health`);
+      const controller = new AbortController();
+      const id = setTimeout(() => controller.abort(), 1000);
+      const res = await fetch(`http://127.0.0.1:${BACKEND_PORT}/api/health`, { signal: controller.signal });
+      clearTimeout(id);
       if (res.ok) {
         console.log('[backend] ready');
         return;

@@ -6,6 +6,11 @@ import { startBackend, stopBackend, getBackendUrl } from './backend.js';
 const _require = createRequire(import.meta.url);
 const { app, BrowserWindow, ipcMain, dialog } = _require('electron') as typeof import('electron');
 
+// Disable GPU acceleration and sandboxing to avoid crashes in virtualized/RDP/sandboxed environments
+app.commandLine.appendSwitch('disable-gpu');
+app.commandLine.appendSwitch('disable-gpu-sandbox');
+app.commandLine.appendSwitch('no-sandbox');
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -33,7 +38,7 @@ function createWindow() {
   });
 
   if (isDev) {
-    mainWindow.loadURL('http://localhost:5173');
+    mainWindow.loadURL('http://127.0.0.1:5173');
     mainWindow.webContents.openDevTools();
   } else {
     mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
