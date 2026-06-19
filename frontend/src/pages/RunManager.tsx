@@ -1,4 +1,5 @@
-import { useState, useCallback, useEffect, useRef,useMemo } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Upload, X, FileText, ChevronDown, ChevronUp, Play, Save, FolderOpen, Loader2, Cpu, Settings, Activity } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { MolecularFile, RunConfig, AppSettings } from '@/types';
@@ -6,7 +7,11 @@ import { useToast } from '@/hooks/use-toast';
 import { useForm, FormProvider, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
-import { useWebSocket } from '@/hooks/useWebSocket';
+import {
+  connectWs, sendWsMessage,
+  onWsStatusChange, setWsUrl as setGlobalWsUrl, isWsConnected,
+} from '@/lib/wsConnection';
+import { subscribeWsMessages, clearWsBuffer } from '@/lib/wsStore';
 
 const ACCEPTED_EXTENSIONS = ['.xyz', '.sdf', '.mol', '.pdb', '.mol2'];
 
@@ -64,6 +69,7 @@ const extensionBadges: Record<string, string> = {
 const RunManager = () => {
   const [files, setFiles] = useState<MolecularFile[]>([]);
   const { toast } = useToast();
+  const navigate = useNavigate();
 
   const methods = useForm<ConfigSchemaType>({
     resolver: zodResolver(configSchema),
@@ -87,20 +93,24 @@ const RunManager = () => {
   const apiUrlRef = useRef('http://localhost:8765');
   const terminalBottomRef = useRef<HTMLDivElement>(null);
 
-  const [wsUrl, setWsUrl] = useState(() => {
+  // ── WebSocket (module-level singleton so it survives navigation) ──────────
+  const [isConnected, setIsConnected] = useState(isWsConnected);
+
+  useEffect(() => {
+    // Sync WS URL from settings once on mount
     try {
       const saved = localStorage.getItem('knf-settings');
       if (saved) {
         const settings: AppSettings = JSON.parse(saved);
         const base = settings.apiBaseUrl.replace(/\/+$/, '');
         apiUrlRef.current = base;
-        return base.replace(/^http/, 'ws') + '/ws/run';
+        setGlobalWsUrl(base.replace(/^http/, 'ws') + '/ws/run');
       }
     } catch { /* ignore */ }
-    return 'ws://127.0.0.1:8765/ws/run';
-  });
 
-  const { isConnected, messages, connect, disconnect, sendMessage } = useWebSocket(wsUrl);
+    // Track connection status for the indicator dot
+    return onWsStatusChange(setIsConnected);
+  }, []);
 
   const uploadFilesToBackend = useCallback(async (filesToUpload: File[]): Promise<boolean> => {
     setUploading(true);
@@ -153,30 +163,32 @@ const RunManager = () => {
 
   const removeFile = (id: string) => setFiles(prev => prev.filter(f => f.id !== id));
 
-  // Handle incoming websocket messages
+  // ── Handle incoming WS messages from the singleton bus ──────────────────
   useEffect(() => {
-    if (messages.length > 0) {
-       const lastMessage = messages[messages.length - 1];
-       if (lastMessage.type === 'completed' || lastMessage.status === 'completed') {
-           setIsStarting(false);
-           toast({ title: 'Run Completed', description: lastMessage.message || 'All files processed successfully.' });
-           disconnect();
-       } else if (lastMessage.type === 'error' || lastMessage.status === 'error') {
-           setIsStarting(false);
-           toast({ title: 'Run Failed', description: lastMessage.message || lastMessage.error || 'Unknown error.', variant: 'destructive' });
-           disconnect();
-       } else if (lastMessage.type === 'log') {
-           setWsLogs(prev => [...prev, lastMessage.message].slice(-100));
-       } else if (lastMessage.type === 'command') {
-           setWsLogs(prev => [...prev, `> ${lastMessage.message}`].slice(-100));
-       } else if (lastMessage.type === 'status') {
-           toast({ title: 'Status Update', description: lastMessage.message });
-       } else if (lastMessage.type === 'results') {
-           const fileList = lastMessage.files?.join(', ') || '';
-           setWsLogs(prev => [...prev, `Results: ${fileList}`].slice(-100));
-       }
-    }
-  }, [messages, disconnect, toast]);
+    return subscribeWsMessages((lastMessage) => {
+      if (lastMessage.type === 'completed' || lastMessage.status === 'completed') {
+        setIsStarting(false);
+        toast({ title: 'Run Completed', description: lastMessage.message || 'All files processed successfully.' });
+      } else if (lastMessage.type === 'error' || lastMessage.status === 'error') {
+        setIsStarting(false);
+        toast({ title: 'Run Failed', description: lastMessage.message || lastMessage.error || 'Unknown error.', variant: 'destructive' });
+      } else if (lastMessage.type === 'log') {
+        setWsLogs(prev => [...prev, lastMessage.message].slice(-100));
+      } else if (lastMessage.type === 'command') {
+        setWsLogs(prev => [...prev, `> ${lastMessage.message}`].slice(-100));
+      } else if (lastMessage.type === 'status') {
+        toast({ title: 'Status Update', description: lastMessage.message });
+      } else if (lastMessage.type === 'file_result') {
+        const r = lastMessage.result;
+        setWsLogs(prev => [...prev, `✓ ${r?.fileName} processed`].slice(-100));
+      } else if (lastMessage.type === 'normalized_update') {
+        toast({ title: 'Normalization Updated', description: lastMessage.message });
+      } else if (lastMessage.type === 'results') {
+        const fileList = (lastMessage.files as string[])?.join(', ') || '';
+        setWsLogs(prev => [...prev, `Results: ${fileList}`].slice(-100));
+      }
+    });
+  }, [toast]);
 
   // Scroll terminal to bottom
   useEffect(() => {
@@ -207,16 +219,21 @@ const RunManager = () => {
 
     setIsStarting(true);
     setWsLogs([]);
+    clearWsBuffer(); // reset so Analysis only shows this run's messages
     toast({ title: 'Run Initialized', description: `Executing computations on ${validFiles.length} molecular systems...` });
 
-    connect();
+    // Connect via the module-level singleton — survives navigate() unmount
+    connectWs();
     await new Promise(r => setTimeout(r, 1000));
 
-    sendMessage({
+    sendWsMessage({
       action: 'start_run',
       config: data,
       files: validFiles.map(f => f.name),
     });
+
+    // Navigate to Analysis window so user can watch live results stream in
+    navigate('/analysis');
   };
 
   const commandPreview = `knf-run --charge ${config.charge || 0} --spin ${config.spin || 1} --mode ${config.processingMode || 'auto'} --backend ${config.nciBackend || 'torch'}${config.gpuEnabled ? ' --gpu' : ''}${config.forceRecomputation ? ' --force' : ''}${config.workers ? ` --workers ${config.workers}` : ''} --output "${config.outputDirectory || './output/'}"`;

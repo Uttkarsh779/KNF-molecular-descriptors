@@ -1,7 +1,7 @@
 import { createRequire } from 'module';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
-import { startBackend, stopBackend, getBackendUrl } from './backend.js';
+import { startBackend, stopBackend, getBackendUrl, getBackendLogPath } from './backend.js';
 
 const _require = createRequire(import.meta.url);
 const { app, BrowserWindow, ipcMain, dialog } = _require('electron') as typeof import('electron');
@@ -64,8 +64,14 @@ app.whenReady().then(async () => {
     await startBackend();
   } catch (err: any) {
     console.error('Failed to start backend:', err.message);
-    dialog.showErrorBox('Backend Error',
-      `Failed to start the computation server.\n\n${err.message}\n\nMake sure Python and all dependencies are installed.`);
+    const logPath = getBackendLogPath();
+    dialog.showErrorBox(
+      'Backend Error',
+      `Failed to start the computation server.\n\n` +
+      `${err.message}\n\n` +
+      `A detailed log has been written to:\n${logPath}\n\n` +
+      `Please send this file when reporting the issue.`
+    );
   }
 
   createWindow();

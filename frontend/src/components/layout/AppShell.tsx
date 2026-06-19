@@ -1,7 +1,7 @@
 import { Link, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, Play, BarChart3, Settings, BookOpen,
-  ChevronLeft, ChevronRight, Atom, CircleDot, Zap
+  ChevronLeft, ChevronRight, Atom, CircleDot, Zap, Activity
 } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { cn } from '@/lib/utils';
@@ -9,7 +9,8 @@ import { cn } from '@/lib/utils';
 const navItems = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, description: 'Overview & history' },
   { to: '/runs', label: 'Run Manager', icon: Play, description: 'Execute computations' },
-  { to: '/results', label: 'Results', icon: BarChart3, description: 'Descriptor library' },
+  { to: '/analysis', label: 'Analysis', icon: Activity, description: 'Live run results' },
+  { to: '/results', label: 'Results', icon: BarChart3, description: 'All historical results' },
   { to: '/explorer', label: 'Explorer', icon: CircleDot, description: 'Scatter analysis' },
   { to: '/settings', label: 'Settings', icon: Settings, description: 'System settings' },
   { to: '/docs', label: 'Documentation', icon: BookOpen, description: 'API reference' },

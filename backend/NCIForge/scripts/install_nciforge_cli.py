@@ -134,6 +134,35 @@ def _windows_persist_user_path(path_dir: str) -> bool:
         return False
 
 
+def _windows_persist_user_env(name: str, value: str) -> bool:
+    if os.name != "nt":
+        return False
+    try:
+        import winreg
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Environment",
+            0,
+            winreg.KEY_READ | winreg.KEY_WRITE,
+        ) as key:
+            winreg.SetValueEx(key, name, 0, winreg.REG_SZ, value)
+        try:
+            import ctypes
+            from ctypes import wintypes
+            HWND_BROADCAST = 0xFFFF
+            WM_SETTINGCHANGE = 0x001A
+            ctypes.windll.user32.SendMessageTimeoutW(
+                HWND_BROADCAST, WM_SETTINGCHANGE, 0, "Environment",
+                0x0002, 1000, ctypes.byref(wintypes.DWORD())
+            )
+        except Exception:
+            pass
+        return True
+    except Exception as exc:
+        print(f"WARNING: Failed to persist environment variable {name}: {exc}")
+        return False
+
+
 def _find_tool_executable(tool: str) -> Optional[str]:
     current = shutil.which(tool)
     if current:
@@ -262,6 +291,9 @@ def main():
         python_exe = str(_venv_python(venv_path))
         _run([python_exe, "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"])
         _run([python_exe, "-m", "pip", "install", "-e", str(repo_root)])
+        if os.name == "nt":
+            print(f"Registering environment variable KNF_STUDIO_VENV -> {venv_path}")
+            _windows_persist_user_env("KNF_STUDIO_VENV", str(venv_path.resolve()))
     else:
         _run([python_exe, "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"])
         _run([python_exe, "-m", "pip", "install", "--user", "-e", str(repo_root)])

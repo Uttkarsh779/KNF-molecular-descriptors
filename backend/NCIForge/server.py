@@ -20,6 +20,7 @@ from datetime import datetime
 import uuid
 import re
 from collections.abc import Iterable
+import database as db
 
 app = FastAPI(title="NCIForge API", version="1.0.0")
 
@@ -339,18 +340,64 @@ def _find_on_path(name: str) -> str | None:
 
 def _check_dependencies() -> dict:
     checks = {}
-    try:
-        import torch
-        checks["torch"] = torch.__version__
-    except ImportError:
-        checks["torch"] = None
-
+    
+    # 1. Find nciforge_path first so we can use its Python interpreter
     nciforge_path = None
     try:
         nciforge_path = _find_nciforge()
         checks["nciforge"] = nciforge_path
     except RuntimeError:
         checks["nciforge"] = None
+
+    # 2. Determine Python interpreter to check torch
+    python_exe = None
+    if nciforge_path:
+        # Check if nciforge is inside a venv (Scripts or bin directory)
+        parent_dir = Path(nciforge_path).parent
+        if parent_dir.name.lower() in ("scripts", "bin"):
+            candidate = parent_dir / ("python.exe" if os.name == "nt" else "python")
+            if candidate.exists():
+                python_exe = str(candidate)
+
+    if not python_exe:
+        # Fallback to KNF_STUDIO_VENV
+        venv_env = os.environ.get("KNF_STUDIO_VENV")
+        if venv_env:
+            venv_path = Path(venv_env)
+            candidate = venv_path / "Scripts" / "python.exe" if os.name == "nt" else venv_path / "bin" / "python"
+            if candidate.exists():
+                python_exe = str(candidate)
+
+    if not python_exe:
+        # Final fallback: use current sys.executable if running in dev (non-frozen),
+        # otherwise search PATH for python/python3.
+        if not getattr(sys, 'frozen', False):
+            python_exe = sys.executable
+        else:
+            python_exe = shutil.which("python") or shutil.which("python3")
+
+    # 3. Check torch version in that Python interpreter
+    checks["torch"] = None
+    if python_exe:
+        try:
+            # Run python -c "import torch; print(torch.__version__)"
+            # Use startupinfo to hide console window on Windows
+            startupinfo = None
+            if os.name == "nt":
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = subprocess.SW_HIDE
+            res = subprocess.run(
+                [python_exe, "-c", "import torch; print(torch.__version__)"],
+                capture_output=True,
+                text=True,
+                check=True,
+                startupinfo=startupinfo,
+                timeout=5
+            )
+            checks["torch"] = res.stdout.strip()
+        except Exception:
+            pass
 
     checks["xtb"] = _find_on_path("xtb")
     checks["obabel"] = _find_on_path("obabel")
@@ -360,11 +407,30 @@ def _check_dependencies() -> dict:
 
 @app.on_event("startup")
 async def hydrate_from_disk() -> None:
-    _seed_history_from_disk()
+    global RUN_HISTORY, RESULT_HISTORY  # must be first before any use
+    db.init_db()
+
+    # Mark any orphaned runs (app killed mid-run) as failed
+    stale = db.mark_stale_runs_failed()
+    if stale:
+        print(f"[startup] marked {stale} stale run(s) as failed")
+
+    if db.is_empty():
+        # One-time migration: seed in-memory history from disk then persist to SQLite
+        _seed_history_from_disk()
+        if RUN_HISTORY or RESULT_HISTORY:
+            db.seed_from_legacy(RUN_HISTORY, RESULT_HISTORY)
+    else:
+        # Load from DB into in-memory caches so legacy code still works
+        RUN_HISTORY = db.get_all_runs()
+        RESULT_HISTORY = db.get_all_results()
 
 @app.get("/api/health")
 async def health():
-    deps = _check_dependencies()
+    try:
+        deps = _check_dependencies()
+    except Exception:
+        deps = {"torch": None, "nciforge": None, "xtb": None, "obabel": None}
     missing = [k for k, v in deps.items() if v is None]
     return {
         "status": "ok" if not missing else "degraded",
@@ -419,15 +485,12 @@ async def get_file_content(filename: str):
 
 @app.get("/api/runs")
 async def get_runs():
-    if not RUN_HISTORY:
-        _seed_history_from_disk()
-    return {"runs": RUN_HISTORY}
+    return {"runs": db.get_all_runs()}
 
 
 @app.get("/api/runs/{run_id}")
 async def get_run(run_id: str):
-    run = next((r for r in RUN_HISTORY if r["id"] == run_id), None)
-    return {"run": run}
+    return {"run": db.get_run_by_id(run_id)}
 
 
 @app.get("/api/runs/{run_id}/logs")
@@ -437,22 +500,14 @@ async def get_run_logs(run_id: str):
 
 @app.get("/api/results")
 async def get_results():
-    if not RUN_HISTORY and not RESULT_HISTORY:
-        _seed_history_from_disk()
-    combined: dict[tuple[str, str], dict] = {}
-    for record in RESULT_HISTORY:
-        combined[(str(record.get("runId")), str(record.get("fileName")))] = record
+    return {"results": db.get_all_results()}
 
-    for run in RUN_HISTORY:
-        run_id = run.get("id")
-        output_root = run.get("config", {}).get("outputDirectory") if isinstance(run.get("config"), dict) else None
-        if not run_id or not output_root:
-            continue
-        parsed = _read_results_from_output_root(str(run_id), str(output_root))
-        for record in parsed:
-            combined[(str(record.get("runId")), str(record.get("fileName")))] = record
 
-    return {"results": list(combined.values())}
+@app.get("/api/results/normalized")
+async def get_results_normalized():
+    """Force-recompute global normalization and return updated results."""
+    updated = db.renormalize_all()
+    return {"results": updated, "count": len(updated)}
 
 @app.websocket("/ws/run")
 async def websocket_endpoint(websocket: WebSocket):
@@ -484,26 +539,24 @@ async def websocket_endpoint(websocket: WebSocket):
                     "elapsedMs": 0,
                     "throughput": 0,
                 }
+                # ---- Persist run to DB immediately ----
+                db.save_run(run_record)
                 RUN_HISTORY.insert(0, run_record)
                 RUN_LOGS[run_id] = [f"[{datetime.utcnow().isoformat()}] Run created"]
 
                 deps = _check_dependencies()
-                missing = [k for k, v in deps.items() if v is None]
+                missing = [k for k, v in deps.items() if v is None and k != "torch"]
                 if missing:
                     issues = []
-                    if "torch" in missing:
-                        issues.append("PyTorch (torch) is not installed")
-                    if "xtb" in missing:
-                        issues.append("xtb (extended tight binding) is not on PATH")
-                    if "obabel" in missing:
-                        issues.append("Open Babel (obabel) is not on PATH")
-                    if "nciforge" in missing:
-                        issues.append("nciforge CLI is not installed")
-
+                    if "xtb"      in missing: issues.append("xtb (extended tight binding) is not on PATH")
+                    if "obabel"   in missing: issues.append("Open Babel (obabel) is not on PATH")
+                    if "nciforge" in missing: issues.append("nciforge CLI is not installed")
+                    run_record["status"] = "failed"
+                    db.update_run_status(run_id, run_record)
                     await websocket.send_json({
                         "type": "error",
                         "message": "Missing dependencies: " + "; ".join(issues) +
-                                   ". This system doesn't have the required computational chemistry tools installed."
+                                   ". Install the required tools and restart the server."
                     })
                     continue
 
@@ -530,73 +583,47 @@ async def websocket_endpoint(websocket: WebSocket):
                     continue
 
                 nciforge_path = deps["nciforge"]
-                args = [nciforge_path]
 
-                if len(input_files) == 1:
-                    args.append(input_files[0])
-                else:
-                    args.append(str(UPLOAD_DIR))
-
-                charge = config.get("charge", 0)
-                spin = config.get("spin", 1)
+                charge          = config.get("charge", 0)
+                spin            = config.get("spin", 1)
                 processing_mode = config.get("processingMode", "auto")
-                nci_backend = config.get("nciBackend", "torch")
-                gpu_enabled = config.get("gpuEnabled", False)
-                force = config.get("forceRecomputation", False)
-                clean = config.get("cleanOutputs", True)
-                debug = config.get("debugMode", False)
-                enable_stop = config.get("enableStopKey", True)
-                interactive = config.get("interactiveQuadrant", False)
-                workers = config.get("workers")
-                output_dir = config.get("outputDirectory", "")
+                nci_backend     = config.get("nciBackend", "torch")
+                gpu_enabled     = config.get("gpuEnabled", False)
+                force           = config.get("forceRecomputation", False)
+                clean           = config.get("cleanOutputs", True)
+                debug           = config.get("debugMode", False)
+                enable_stop     = config.get("enableStopKey", True)
+                interactive     = config.get("interactiveQuadrant", False)
+                workers         = config.get("workers")
+                output_dir      = config.get("outputDirectory", "")
+                grid_spacing    = config.get("gridSpacing")
+                grid_padding    = config.get("gridPadding")
+                batch_size      = config.get("batchSize")
+                eig_batch_size  = config.get("eigBatchSize")
+                rho_floor       = config.get("rhoFloor")
+                nci_device      = config.get("nciDevice")
 
-                args.extend(["--charge", str(charge)])
-                args.extend(["--spin", str(spin)])
-                args.extend(["--processing", processing_mode])
-                args.extend(["--nci-backend", nci_backend])
-
-                if gpu_enabled:
-                    args.append("--gpu")
-                if force:
-                    args.append("--force")
-                if clean:
-                    args.append("--clean")
-                if debug:
-                    args.append("--debug")
-                if enable_stop:
-                    args.append("--enable-stop-key")
-                if interactive:
-                    args.append("--interactive-quadrant-plot")
-                if workers:
-                    args.extend(["--workers", str(workers)])
-                if output_dir:
-                    args.extend(["--output-dir", output_dir])
-
-                grid_spacing = config.get("gridSpacing")
-                grid_padding = config.get("gridPadding")
-                batch_size = config.get("batchSize")
-                eig_batch_size = config.get("eigBatchSize")
-                rho_floor = config.get("rhoFloor")
-                nci_device = config.get("nciDevice")
-
-                if grid_spacing is not None:
-                    args.extend(["--nci-grid-spacing", str(grid_spacing)])
-                if grid_padding is not None:
-                    args.extend(["--nci-grid-padding", str(grid_padding)])
-                if batch_size is not None:
-                    args.extend(["--nci-batch-size", str(batch_size)])
-                if eig_batch_size is not None:
-                    args.extend(["--nci-eig-batch-size", str(eig_batch_size)])
-                if rho_floor is not None:
-                    args.extend(["--nci-rho-floor", str(rho_floor)])
-                if nci_device:
-                    args.extend(["--nci-device", nci_device])
-
-                cmd_display = " ".join(str(a) for a in args)
-                await websocket.send_json({
-                    "type": "command",
-                    "message": cmd_display
-                })
+                def _build_args(file_path: str) -> list[str]:
+                    a = [nciforge_path, file_path]
+                    a.extend(["--charge", str(charge)])
+                    a.extend(["--spin", str(spin)])
+                    a.extend(["--processing", processing_mode])
+                    a.extend(["--nci-backend", nci_backend])
+                    if gpu_enabled:  a.append("--gpu")
+                    if force:        a.append("--force")
+                    if clean:        a.append("--clean")
+                    if debug:        a.append("--debug")
+                    if enable_stop:  a.append("--enable-stop-key")
+                    if interactive:  a.append("--interactive-quadrant-plot")
+                    if workers:      a.extend(["--workers", str(workers)])
+                    if output_dir:   a.extend(["--output-dir", output_dir])
+                    if grid_spacing  is not None: a.extend(["--nci-grid-spacing",    str(grid_spacing)])
+                    if grid_padding  is not None: a.extend(["--nci-grid-padding",    str(grid_padding)])
+                    if batch_size    is not None: a.extend(["--nci-batch-size",      str(batch_size)])
+                    if eig_batch_size is not None: a.extend(["--nci-eig-batch-size", str(eig_batch_size)])
+                    if rho_floor     is not None: a.extend(["--nci-rho-floor",       str(rho_floor)])
+                    if nci_device:               a.extend(["--nci-device",          nci_device])
+                    return a
 
                 # Ensure xtb and obabel are on PATH
                 xtb_dir = r"C:\ProgramData\xtb\xtb-6.7.1\bin"
@@ -605,94 +632,134 @@ async def websocket_endpoint(websocket: WebSocket):
                 proc_env = os.environ.copy()
                 proc_env["PATH"] = f"{extra_path};{proc_env.get('PATH', '')}"
 
-                process = await asyncio.create_subprocess_exec(
-                    *args,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    cwd=str(UPLOAD_DIR),
-                    env=proc_env
-                )
-                ACTIVE_PROCESSES[run_id] = process
-                STOP_REQUESTED.discard(run_id)
+                if output_dir:
+                    clean_output_dir = output_dir.lstrip("./\\").rstrip("/\\")
+                    output_root = str(UPLOAD_DIR / clean_output_dir) if clean_output_dir else str(UPLOAD_DIR)
+                else:
+                    output_root = str(UPLOAD_DIR)
 
-                async def stream_output(stream, label):
-                    while True:
-                        line = await stream.readline()
-                        if not line:
-                            break
-                        text = line.decode(errors="replace").strip()
-                        if text:
-                            RUN_LOGS[run_id].append(text)
-                            await websocket.send_json({
-                                "type": "log",
-                                "message": text
-                            })
+                # ---------------------------------------------------------------
+                # PER-FILE LOOP — stream logs, emit file_result for each file
+                # ---------------------------------------------------------------
+                run_failed = False
+                all_file_results: list[dict] = []
 
-                try:
-                    await asyncio.wait_for(
-                        asyncio.gather(
-                            stream_output(process.stdout, "out"),
-                            stream_output(process.stderr, "err")
-                        ),
-                        timeout=TIMEOUT_SECONDS
-                    )
-
-                    returncode = await process.wait()
-
+                for file_path in input_files:
                     if run_id in STOP_REQUESTED:
-                        run_record["status"] = "stopped"
-                        run_record["stoppedFiles"] = len(filenames)
-                        await websocket.send_json({
-                            "type": "status",
-                            "message": "Run stopped."
-                        })
-                    elif returncode == 0:
-                        run_record["status"] = "completed"
-                        await websocket.send_json({
-                            "type": "completed",
-                            "message": "All files processed successfully.",
-                            "output_dir": str(UPLOAD_DIR)
-                        })
+                        break
 
-                        result_files = []
-                        # Resolve output_root relative to UPLOAD_DIR (where nciforge runs)
-                        if output_dir:
-                            clean_output_dir = output_dir.lstrip("./\\").rstrip("/\\")
-                            output_root = str(UPLOAD_DIR / clean_output_dir) if clean_output_dir else str(UPLOAD_DIR)
-                        else:
-                            output_root = str(UPLOAD_DIR)
-                        for root, _, files in os.walk(output_root):
-                            for fn in files:
-                                if fn.endswith((".json", ".csv", ".txt", ".png")):
-                                    rel = os.path.relpath(os.path.join(root, fn), output_root)
-                                    result_files.append(rel)
-                        if result_files:
-                            parsed_results = _read_results_from_output_root(run_id, output_root)
-                            RESULT_HISTORY.extend(parsed_results)
-                            run_record["completedFiles"] = len(parsed_results)
-                            run_record["successFiles"] = len(parsed_results)
-                            await websocket.send_json({
-                                "type": "results",
-                                "files": result_files
-                            })
-                    elif not run_id in STOP_REQUESTED:
-                        run_record["status"] = "failed"
-                        run_record["failedFiles"] = len(filenames)
-                        await websocket.send_json({
-                            "type": "error",
-                            "message": f"Process exited with code {returncode}. Check logs above for details."
-                        })
+                    file_name = Path(file_path).name
+                    args = _build_args(file_path)
+                    cmd_display = " ".join(str(a) for a in args)
+                    await websocket.send_json({"type": "command", "message": f"[{file_name}] {cmd_display}"})
 
-                except asyncio.TimeoutError:
-                    process.kill()
+                    try:
+                        process = await asyncio.create_subprocess_exec(
+                            *args,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            cwd=str(UPLOAD_DIR),
+                            env=proc_env
+                        )
+                        ACTIVE_PROCESSES[run_id] = process
+
+                        async def _stream(stream):
+                            while True:
+                                line = await stream.readline()
+                                if not line:
+                                    break
+                                text = line.decode(errors="replace").strip()
+                                if text:
+                                    RUN_LOGS.setdefault(run_id, []).append(text)
+                                    await websocket.send_json({"type": "log", "message": text})
+
+                        await asyncio.wait_for(
+                            asyncio.gather(_stream(process.stdout), _stream(process.stderr)),
+                            timeout=TIMEOUT_SECONDS
+                        )
+                        returncode = await process.wait()
+
+                    except asyncio.TimeoutError:
+                        process.kill()
+                        run_record["failedFiles"] = run_record.get("failedFiles", 0) + 1
+                        await websocket.send_json({
+                            "type": "log",
+                            "message": f"[{file_name}] TIMEOUT after {TIMEOUT_SECONDS}s"
+                        })
+                        run_failed = True
+                        continue
+                    finally:
+                        ACTIVE_PROCESSES.pop(run_id, None)
+
+                    if returncode != 0:
+                        run_record["failedFiles"] = run_record.get("failedFiles", 0) + 1
+                        await websocket.send_json({
+                            "type": "log",
+                            "message": f"[{file_name}] exited with code {returncode}"
+                        })
+                        run_failed = True
+                        continue
+
+                    # --- Parse this file's result and emit immediately ---
+                    parsed = _read_results_from_output_root(run_id, output_root)
+                    file_result = next(
+                        (r for r in parsed if Path(r.get("fileName", "")).name == file_name or r.get("fileName") == file_name),
+                        None
+                    )
+                    if not file_result and parsed:
+                        # Fall back: pick most recently added
+                        existing_ids = {r["id"] for r in all_file_results}
+                        new_results = [r for r in parsed if r["id"] not in existing_ids]
+                        file_result = new_results[0] if new_results else None
+
+                    if file_result:
+                        db.save_result(file_result)
+                        all_file_results.append(file_result)
+                        RESULT_HISTORY.append(file_result)
+                        run_record["completedFiles"] = run_record.get("completedFiles", 0) + 1
+                        run_record["successFiles"]   = run_record.get("successFiles", 0) + 1
+                        db.update_run_status(run_id, run_record)
+                        await websocket.send_json({
+                            "type": "file_result",
+                            "result": file_result
+                        })
+                    else:
+                        run_record["completedFiles"] = run_record.get("completedFiles", 0) + 1
+
+                # ---------------------------------------------------------------
+                # All files done — finalize run
+                # ---------------------------------------------------------------
+                if run_id in STOP_REQUESTED:
+                    run_record["status"] = "stopped"
+                    run_record["stoppedFiles"] = len(input_files) - run_record.get("completedFiles", 0)
+                    await websocket.send_json({"type": "status", "message": "Run stopped."})
+                elif run_failed and not all_file_results:
                     run_record["status"] = "failed"
                     await websocket.send_json({
                         "type": "error",
-                        "message": f"Process timed out after {TIMEOUT_SECONDS} seconds."
+                        "message": "All files failed. Check terminal logs."
                     })
-                finally:
-                    ACTIVE_PROCESSES.pop(run_id, None)
-                    STOP_REQUESTED.discard(run_id)
+                else:
+                    run_record["status"] = "completed"
+                    run_record["completedAt"] = datetime.utcnow().isoformat() + "Z"
+                    await websocket.send_json({
+                        "type": "completed",
+                        "message": f"Run complete — {len(all_file_results)}/{len(input_files)} files processed.",
+                        "output_dir": output_root
+                    })
+
+                db.update_run_status(run_id, run_record)
+
+                # ---------------------------------------------------------------
+                # Global renormalization across ALL historical results
+                # ---------------------------------------------------------------
+                updated_results = db.renormalize_all()
+                await websocket.send_json({
+                    "type": "normalized_update",
+                    "message": f"Global normalization updated — {len(updated_results)} molecules across all runs.",
+                    "count": len(updated_results)
+                })
+                STOP_REQUESTED.discard(run_id)
 
             elif action in ("stop_run", "q"):
                 run_id = data.get("runId")
@@ -732,24 +799,57 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 def _find_nciforge() -> str:
-    candidates = [
+    # 1. Check KNF_STUDIO_VENV environment variable
+    venv_env = os.environ.get("KNF_STUDIO_VENV")
+    candidates = []
+    if venv_env:
+        venv_path = Path(venv_env)
+        candidates.append(str(venv_path / "Scripts" / "nciforge.exe"))
+        candidates.append(str(venv_path / "bin" / "nciforge"))
+
+    # 2. Check traditional local candidates relative to current file (dev environment fallback)
+    candidates.extend([
         "nciforge",
         "nciforge.exe",
         os.path.join(os.path.dirname(__file__), "venv", "Scripts", "nciforge.exe"),
         os.path.join(os.path.dirname(__file__), ".venv-nciforge", "Scripts", "nciforge.exe"),
         os.path.join(os.path.dirname(__file__), ".venv-nciforge", "bin", "nciforge"),
-    ]
+    ])
+
+    # 3. Add system python global/user-site script candidates via globbing
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        roaming_python = Path(appdata) / "Python"
+        if roaming_python.exists():
+            for p in roaming_python.glob("Python*/Scripts/nciforge.exe"):
+                candidates.append(str(p))
+            for p in roaming_python.glob("Python*/Scripts/nciforge"):
+                candidates.append(str(p))
+
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    if local_appdata:
+        local_python = Path(local_appdata) / "Programs" / "Python"
+        if local_python.exists():
+            for p in local_python.glob("Python*/Scripts/nciforge.exe"):
+                candidates.append(str(p))
+            for p in local_python.glob("Python*/Scripts/nciforge"):
+                candidates.append(str(p))
+        
+        # Windows Store python packages
+        packages = Path(local_appdata) / "Packages"
+        if packages.exists():
+            for p in packages.glob("PythonSoftwareFoundation.Python.*/LocalCache/local-packages/Python*/Scripts/nciforge.exe"):
+                candidates.append(str(p))
+
     for c in candidates:
-        resolved = shutil.which(c)
-        if resolved:
-            return resolved
-    scripts_dir = os.path.join(
-        os.environ.get("LOCALAPPDATA", ""),
-        "Packages", "PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0",
-        "LocalCache", "local-packages", "Python311", "Scripts", "nciforge.exe"
-    )
-    if os.path.exists(scripts_dir):
-        return scripts_dir
+        if os.path.isabs(c):
+            if os.path.exists(c) and os.path.isfile(c):
+                return c
+        else:
+            resolved = shutil.which(c)
+            if resolved:
+                return resolved
+
     raise RuntimeError("nciforge not found. Install with: pip install -e /path/to/NCIForge")
 
 
