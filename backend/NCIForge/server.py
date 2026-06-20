@@ -765,7 +765,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     run_record["completedAt"] = datetime.utcnow().isoformat() + "Z"
                     await websocket.send_json({
                         "type": "completed",
-                        "message": f"Run complete — {len(all_file_results)}/{len(input_files)} files processed.",
+                        "message": f"Run complete — {run_record.get('successFiles', 0)}/{len(input_files)} files processed.",
                         "output_dir": output_root
                     })
 
