@@ -6,6 +6,7 @@ Usage: python server.py
 """
 from fastapi import FastAPI, WebSocket, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 import asyncio
 import csv
 import math
@@ -31,6 +32,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc):
+    import traceback
+    traceback.print_exc()
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal server error: {str(exc)}"},
+    )
 
 UPLOAD_DIR = Path(tempfile.mkdtemp(prefix="nciforge_"))
 TIMEOUT_SECONDS = 600
@@ -442,13 +453,19 @@ async def health():
 @app.post("/api/upload")
 async def upload_files(files: list[UploadFile] = File(...)):
     saved = []
+    errors = []
     for f in files:
-        dest = UPLOAD_DIR / f.filename
-        with open(dest, "wb") as out:
+        try:
+            name = f.filename or "unnamed"
+            safe_name = os.path.basename(name)
+            dest = UPLOAD_DIR / safe_name
             content = await f.read()
-            out.write(content)
-        saved.append({"name": f.filename, "size": len(content), "path": str(dest)})
-    return {"files": saved}
+            with open(dest, "wb") as out:
+                out.write(content)
+            saved.append({"name": safe_name, "size": len(content), "path": str(dest)})
+        except Exception as e:
+            errors.append({"name": f.filename, "error": str(e)})
+    return {"files": saved, "errors": errors}
 
 @app.get("/api/files")
 async def list_files():
