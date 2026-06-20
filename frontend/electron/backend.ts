@@ -1,4 +1,4 @@
-import { ChildProcess, spawn, spawnSync } from 'child_process';
+import { ChildProcess, spawn, spawnSync, execSync } from 'child_process';
 import { createRequire } from 'module';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -105,7 +105,31 @@ function getDevPythonCommand(): { command: string; args: string[] } {
 
 let backendProcess: ChildProcess | null = null;
 
+function killPort(port: number): void {
+  try {
+    if (process.platform === 'win32') {
+      const output = execSync(`netstat -ano`).toString();
+      const lines = output.split('\n');
+      for (const line of lines) {
+        if (line.includes(`:${port}`) && line.includes('LISTENING')) {
+          const parts = line.trim().split(/\s+/);
+          const pid = parts[parts.length - 1];
+          if (pid && pid !== '0') {
+            console.log(`[backend] Killing process ${pid} using port ${port}...`);
+            execSync(`taskkill /F /PID ${pid}`);
+          }
+        }
+      }
+    } else {
+      execSync(`lsof -t -i:${port} | xargs kill -9`);
+    }
+  } catch (e) {
+    // Ignore error if port is not in use
+  }
+}
+
 export async function startBackend(): Promise<void> {
+  killPort(BACKEND_PORT);
   const newPath = buildEnvPath();
   const pathKey = Object.keys(process.env).find(k => k.toLowerCase() === 'path') || 'PATH';
 
