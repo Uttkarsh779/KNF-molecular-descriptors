@@ -436,17 +436,21 @@ async def hydrate_from_disk() -> None:
         RUN_HISTORY = db.get_all_runs()
         RESULT_HISTORY = db.get_all_results()
 
+CACHED_DEPS: dict | None = None
+
 @app.get("/api/health")
 async def health():
-    try:
-        deps = _check_dependencies()
-    except Exception:
-        deps = {"torch": None, "nciforge": None, "xtb": None, "obabel": None}
-    missing = [k for k, v in deps.items() if v is None]
+    global CACHED_DEPS
+    if CACHED_DEPS is None:
+        try:
+            CACHED_DEPS = _check_dependencies()
+        except Exception:
+            CACHED_DEPS = {"torch": None, "nciforge": None, "xtb": None, "obabel": None}
+    missing = [k for k, v in CACHED_DEPS.items() if v is None]
     return {
         "status": "ok" if not missing else "degraded",
         "upload_dir": str(UPLOAD_DIR),
-        "dependencies": deps,
+        "dependencies": CACHED_DEPS,
         "missing": missing,
     }
 
