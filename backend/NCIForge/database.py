@@ -94,6 +94,7 @@ def init_db() -> None:
     """Create tables if they do not exist."""
     with _conn() as con:
         con.executescript(_SCHEMA)
+        con.execute("UPDATE results SET SCDI = SCDI_variance WHERE SCDI = 0 AND SCDI_variance != 0")
 
 
 def is_empty() -> bool:

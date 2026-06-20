@@ -267,7 +267,7 @@ def _read_results_from_output_root(run_id: str, output_root: str | None) -> list
                 "KUID_prefix4": row.get("KUID_prefix4"),
                 "KUID_prefix6": row.get("KUID_prefix6"),
                 "SNCI": _safe_float(row.get("SNCI", 0.0)),
-                "SCDI": 0.0,
+                "SCDI": _safe_float(row.get("SCDI_variance", 0.0)),
                 "SCDI_variance": _safe_float(row.get("SCDI_variance", 0.0)),
                 "SNCI_Norm": _safe_float(row.get("SNCI_Norm", row.get("SNCI", 0.0))),
                 "SCDI_Norm": _safe_float(row.get("SCDI_Norm", 0.0)),
@@ -315,6 +315,55 @@ def _read_results_from_output_root(run_id: str, output_root: str | None) -> list
                     return parsed
         except Exception:
             pass
+
+    # Fallback 3: Parse per-file output.txt from subdirectories
+    existing_names = {r.get("fileName") for r in parsed}
+    for entry in os.scandir(output_root):
+        if entry.is_dir() and entry.name not in ("__pycache__", "."):
+            output_txt = os.path.join(entry.path, "output.txt")
+            if os.path.exists(output_txt):
+                try:
+                    txt = open(output_txt, "r", encoding="utf-8", errors="ignore").read()
+                    file_name = None
+                    for ext in (".mol", ".xyz", ".pdb", ".cml", ".sdf"):
+                        mol_file = os.path.join(entry.path, f"xtbtopo{ext}")
+                        if os.path.exists(mol_file):
+                            file_name = entry.name + ext
+                            break
+                    if not file_name:
+                        file_name = entry.name
+                    vals = {}
+                    for line in txt.splitlines():
+                        for key in ("SNCI_raw", "SCDI_variance", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9"):
+                            if line.strip().startswith(key + ":") or line.strip().startswith(key + " "):
+                                parts = line.split(":", 1)
+                                if len(parts) == 2:
+                                    raw = parts[1].strip().split()[0] if parts[1].strip() else "0"
+                                    vals[key] = _safe_float(raw) if raw not in ("n/a", "nan", "inf", "") else 0.0
+                    if vals and file_name not in existing_names:
+                        parsed.append({
+                            "id": str(uuid.uuid4()),
+                            "runId": run_id,
+                            "fileName": file_name,
+                            "f1": vals.get("f1", 0.0),
+                            "f2": vals.get("f2", 0.0),
+                            "f3": vals.get("f3", 0.0),
+                            "f4": vals.get("f4", 0.0),
+                            "f5": vals.get("f5", 0.0),
+                            "f6": vals.get("f6", 0.0),
+                            "f7": vals.get("f7", 0.0),
+                            "f8": vals.get("f8", 0.0),
+                            "f9": vals.get("f9", 0.0),
+                            "SNCI": vals.get("SNCI_raw", 0.0),
+                            "SCDI": vals.get("SCDI_variance", 0.0),
+                            "SCDI_variance": vals.get("SCDI_variance", 0.0),
+                            "SNCI_Norm": 0.0,
+                            "SCDI_Norm": 0.0,
+                            "quadrant": "Q1",
+                            "status": "success",
+                        })
+                except Exception:
+                    pass
     return parsed
 
 
@@ -492,14 +541,32 @@ async def get_file_content(filename: str):
     safe_name = os.path.basename(filename)
     if not safe_name or safe_name in (".", ".."):
         raise HTTPException(status_code=400, detail="Invalid filename")
-    for root, _, files in os.walk(str(UPLOAD_DIR)):
-        if safe_name in files:
-            target_path = Path(root) / safe_name
-            try:
-                content = target_path.read_text(encoding="utf-8", errors="ignore")
-                return {"name": safe_name, "content": content}
-            except Exception as e:
-                raise HTTPException(status_code=500, detail=str(e))
+    # Search directories: upload dir, then output + source dirs from all runs
+    search_dirs: list[Path] = [UPLOAD_DIR]
+    for run in db.get_all_runs():
+        cfg = json.loads(run.get("config_json") or "{}") if run.get("config_json") else {}
+        for key in ("outputDirectory", "inputDirectory", "inputDir", "input_dir"):
+            val = cfg.get(key)
+            if val and os.path.isdir(val):
+                search_dirs.append(Path(val))
+                parent = Path(val).parent
+                if parent.is_dir():
+                    search_dirs.append(parent)
+    # Also search known water molecule directories
+    downloads = Path.home() / "Downloads" / "water"
+    if downloads.is_dir():
+        for child in downloads.iterdir():
+            if child.is_dir():
+                search_dirs.append(child)
+    for search_dir in search_dirs:
+        for root, _, files in os.walk(str(search_dir)):
+            if safe_name in files:
+                target_path = Path(root) / safe_name
+                try:
+                    content = target_path.read_text(encoding="utf-8", errors="ignore")
+                    return {"name": safe_name, "content": content}
+                except Exception as e:
+                    raise HTTPException(status_code=500, detail=str(e))
     raise HTTPException(status_code=404, detail="File not found")
 
 
@@ -660,92 +727,103 @@ async def websocket_endpoint(websocket: WebSocket):
                     output_root = str(UPLOAD_DIR)
 
                 # ---------------------------------------------------------------
-                # PER-FILE LOOP — stream logs, emit file_result for each file
+                # PER-FILE LOOP — parallel with concurrency limit
                 # ---------------------------------------------------------------
                 run_failed = False
                 all_file_results: list[dict] = []
+                concurrency = min(config.get("concurrency", 4) or 4, len(input_files))
+                sem = asyncio.Semaphore(concurrency)
+                file_lock = asyncio.Lock()
 
-                for file_path in input_files:
+                async def _process_one(file_path: str):
+                    nonlocal run_failed
                     if run_id in STOP_REQUESTED:
-                        break
+                        return
+                    async with sem:
+                        file_name = Path(file_path).name
+                        args = _build_args(file_path)
+                        cmd_display = " ".join(str(a) for a in args)
+                        await websocket.send_json({"type": "log", "message": f"[{file_name}] Starting..."})
 
-                    file_name = Path(file_path).name
-                    args = _build_args(file_path)
-                    cmd_display = " ".join(str(a) for a in args)
-                    await websocket.send_json({"type": "command", "message": f"[{file_name}] {cmd_display}"})
+                        try:
+                            process = await asyncio.create_subprocess_exec(
+                                *args,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,
+                                cwd=str(UPLOAD_DIR),
+                                env=proc_env
+                            )
 
-                    try:
-                        process = await asyncio.create_subprocess_exec(
-                            *args,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
-                            cwd=str(UPLOAD_DIR),
-                            env=proc_env
+                            async def _stream(stream):
+                                while True:
+                                    line = await stream.readline()
+                                    if not line:
+                                        break
+                                    text = line.decode(errors="replace").strip()
+                                    if text:
+                                        RUN_LOGS.setdefault(run_id, []).append(text)
+                                        await websocket.send_json({"type": "log", "message": text})
+
+                            await asyncio.wait_for(
+                                asyncio.gather(_stream(process.stdout), _stream(process.stderr)),
+                                timeout=TIMEOUT_SECONDS
+                            )
+                            returncode = await process.wait()
+
+                        except asyncio.TimeoutError:
+                            process.kill()
+                            async with file_lock:
+                                run_record["failedFiles"] = run_record.get("failedFiles", 0) + 1
+                            await websocket.send_json({
+                                "type": "log",
+                                "message": f"[{file_name}] TIMEOUT after {TIMEOUT_SECONDS}s"
+                            })
+                            async with file_lock:
+                                run_failed = True
+                            return
+
+                        if returncode != 0:
+                            async with file_lock:
+                                run_record["failedFiles"] = run_record.get("failedFiles", 0) + 1
+                            await websocket.send_json({
+                                "type": "log",
+                                "message": f"[{file_name}] exited with code {returncode}"
+                            })
+                            async with file_lock:
+                                run_failed = True
+                            return
+
+                        parsed = _read_results_from_output_root(run_id, output_root)
+                        file_result = next(
+                            (r for r in parsed if Path(r.get("fileName", "")).name == file_name or r.get("fileName") == file_name),
+                            None
                         )
-                        ACTIVE_PROCESSES[run_id] = process
+                        if not file_result and parsed:
+                            async with file_lock:
+                                existing_ids = {r["id"] for r in all_file_results}
+                            new_results = [r for r in parsed if r["id"] not in existing_ids]
+                            file_result = new_results[0] if new_results else None
 
-                        async def _stream(stream):
-                            while True:
-                                line = await stream.readline()
-                                if not line:
-                                    break
-                                text = line.decode(errors="replace").strip()
-                                if text:
-                                    RUN_LOGS.setdefault(run_id, []).append(text)
-                                    await websocket.send_json({"type": "log", "message": text})
+                        async with file_lock:
+                            if file_result:
+                                db.save_result(file_result)
+                                all_file_results.append(file_result)
+                                RESULT_HISTORY.append(file_result)
+                                run_record["completedFiles"] = run_record.get("completedFiles", 0) + 1
+                                run_record["successFiles"]   = run_record.get("successFiles", 0) + 1
+                                db.update_run_status(run_id, run_record)
+                                await websocket.send_json({
+                                    "type": "file_result",
+                                    "result": file_result
+                                })
+                            else:
+                                run_record["completedFiles"] = run_record.get("completedFiles", 0) + 1
 
-                        await asyncio.wait_for(
-                            asyncio.gather(_stream(process.stdout), _stream(process.stderr)),
-                            timeout=TIMEOUT_SECONDS
-                        )
-                        returncode = await process.wait()
-
-                    except asyncio.TimeoutError:
-                        process.kill()
-                        run_record["failedFiles"] = run_record.get("failedFiles", 0) + 1
-                        await websocket.send_json({
-                            "type": "log",
-                            "message": f"[{file_name}] TIMEOUT after {TIMEOUT_SECONDS}s"
-                        })
-                        run_failed = True
-                        continue
-                    finally:
-                        ACTIVE_PROCESSES.pop(run_id, None)
-
-                    if returncode != 0:
-                        run_record["failedFiles"] = run_record.get("failedFiles", 0) + 1
-                        await websocket.send_json({
-                            "type": "log",
-                            "message": f"[{file_name}] exited with code {returncode}"
-                        })
-                        run_failed = True
-                        continue
-
-                    # --- Parse this file's result and emit immediately ---
-                    parsed = _read_results_from_output_root(run_id, output_root)
-                    file_result = next(
-                        (r for r in parsed if Path(r.get("fileName", "")).name == file_name or r.get("fileName") == file_name),
-                        None
-                    )
-                    if not file_result and parsed:
-                        # Fall back: pick most recently added
-                        existing_ids = {r["id"] for r in all_file_results}
-                        new_results = [r for r in parsed if r["id"] not in existing_ids]
-                        file_result = new_results[0] if new_results else None
-
-                    if file_result:
-                        db.save_result(file_result)
-                        all_file_results.append(file_result)
-                        RESULT_HISTORY.append(file_result)
-                        run_record["completedFiles"] = run_record.get("completedFiles", 0) + 1
-                        run_record["successFiles"]   = run_record.get("successFiles", 0) + 1
-                        db.update_run_status(run_id, run_record)
-                        await websocket.send_json({
-                            "type": "file_result",
-                            "result": file_result
-                        })
-                    else:
-                        run_record["completedFiles"] = run_record.get("completedFiles", 0) + 1
+                await websocket.send_json({
+                    "type": "status",
+                    "message": f"Processing {len(input_files)} files ({concurrency} parallel)..."
+                })
+                await asyncio.gather(*[_process_one(fp) for fp in input_files])
 
                 # ---------------------------------------------------------------
                 # All files done — finalize run
