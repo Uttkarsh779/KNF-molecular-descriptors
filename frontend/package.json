@@ -11,6 +11,7 @@
     "build:dev": "vite build --mode development",
     "electron:dev": "concurrently -k \"vite\" \"wait-on http://127.0.0.1:5173 && tsc -p tsconfig.electron.json && node scripts/copy-preload.mjs && electron .\"",
     "electron:build": "vite build && tsc -p tsconfig.electron.json && node scripts/copy-preload.mjs && electron-builder",
+    "electron:dist": "vite build && tsc -p tsconfig.electron.json && node scripts/copy-preload.mjs && node scripts/make-icon.mjs && node scripts/freeze-backend.mjs && electron-builder && node scripts/copy-installer-helper.mjs",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",
@@ -99,29 +100,43 @@
   "build": {
     "appId": "com.knfstudio.app",
     "productName": "KNF Studio",
+    "copyright": "Copyright © 2025 KNF Studio",
     "files": [
       "dist/**/*",
       "dist-electron/**/*"
     ],
     "extraResources": [
       {
-        "from": "../backend/NCIForge",
-        "to": "backend",
-        "filter": [
-          "**/*"
-        ]
+        "from": "resources/backend/server",
+        "to": "backend/server",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "resources/backend/tools",
+        "to": "backend/tools",
+        "filter": ["**/*"]
       }
     ],
     "win": {
-      "target": [
-        "nsis"
-      ],
-      "icon": "public/icon.png"
+      "target": ["nsis"],
+      "icon": "public/icon.ico",
+      "requestedExecutionLevel": "asInvoker"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "deleteAppDataOnUninstall": true
+      "installerIcon": "public/icon.ico",
+      "uninstallerIcon": "public/icon.ico",
+      "installerHeader": "public/installer-header.bmp",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "KNF Studio",
+      "deleteAppDataOnUninstall": false,
+      "license": null,
+      "artifactName": "KNFStudio-Setup-${version}.exe"
+    },
+    "directories": {
+      "output": "dist-installer"
     }
   }
 }

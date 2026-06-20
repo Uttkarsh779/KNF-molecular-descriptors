@@ -4,6 +4,9 @@ import path from "path";
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
+  // CRITICAL for Electron: assets must use relative paths (./assets/...)
+  // not absolute paths (/assets/...) because file:// protocol has no host.
+  base: "./",
   server: {
     host: "127.0.0.1",
     port: 5173,

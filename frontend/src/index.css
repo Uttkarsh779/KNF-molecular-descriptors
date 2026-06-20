@@ -256,3 +256,19 @@
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
+
+/* Analysis page — row slide-in animation */
+.animate-slide-in-row {
+  animation: slide-in-row 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes slide-in-row {
+  from {
+    opacity: 0;
+    transform: translateX(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
