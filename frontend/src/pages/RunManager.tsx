@@ -90,7 +90,7 @@ const RunManager = () => {
   // Hook up the websocket (simulated backend URL)
   const [uploading, setUploading] = useState(false);
   const [wsLogs, setWsLogs] = useState<string[]>([]);
-  const apiUrlRef = useRef('http://localhost:8765');
+  const apiUrlRef = useRef('http://127.0.0.1:8765');
   const terminalBottomRef = useRef<HTMLDivElement>(null);
 
   // ── WebSocket (module-level singleton so it survives navigation) ──────────
