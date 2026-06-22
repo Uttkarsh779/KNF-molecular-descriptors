@@ -20,18 +20,26 @@ function BackendStatus() {
   const [status, setStatus] = useState<'connected' | 'offline' | 'checking'>('checking');
 
   useEffect(() => {
+    let retries = 0;
+    const maxRetries = 5;
     const check = async () => {
       try {
         const raw = localStorage.getItem('knf-settings');
         const base = raw ? JSON.parse(raw).apiBaseUrl : 'http://127.0.0.1:8765';
         const res = await fetch(`${base}/api/health`, { signal: AbortSignal.timeout(3000) });
-        setStatus(res.ok ? 'connected' : 'offline');
-      } catch {
+        if (res.ok) {
+          setStatus('connected');
+          retries = 0;
+          return;
+        }
+      } catch { /* ignore */ }
+      retries++;
+      if (retries >= maxRetries) {
         setStatus('offline');
       }
     };
     check();
-    const interval = setInterval(check, 10000);
+    const interval = setInterval(check, 5000);
     return () => clearInterval(interval);
   }, []);
 

@@ -108,7 +108,7 @@ let backendProcess: ChildProcess | null = null;
 function killPort(port: number): void {
   try {
     if (process.platform === 'win32') {
-      const output = execSync(`netstat -ano`).toString();
+      const output = execSync('netstat -ano').toString();
       const lines = output.split('\n');
       for (const line of lines) {
         if (line.includes(`:${port}`) && line.includes('LISTENING')) {
@@ -116,9 +116,19 @@ function killPort(port: number): void {
           const pid = parts[parts.length - 1];
           if (pid && pid !== '0') {
             console.log(`[backend] Killing process ${pid} using port ${port}...`);
-            execSync(`taskkill /F /PID ${pid}`);
+            execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore' });
           }
         }
+      }
+      // Wait up to 3s for port to be released
+      const start = Date.now();
+      while (Date.now() - start < 3000) {
+        const check = execSync('netstat -ano').toString();
+        const stillListening = check.split('\n').some(l =>
+          l.includes(`:${port}`) && l.includes('LISTENING')
+        );
+        if (!stillListening) break;
+        execSync('timeout /t 1 /nobreak >nul 2>&1', { stdio: 'ignore' });
       }
     } else {
       execSync(`lsof -t -i:${port} | xargs kill -9`);
