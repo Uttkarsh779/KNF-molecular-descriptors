@@ -610,7 +610,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 config = data.get("config", {})
                 filenames = data.get("files", [])
                 run_id = f"run-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{str(uuid.uuid4())[:8]}"
-                run_name = f"Run {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}"
+                run_name = data.get("name", "").strip() or f"Run {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}"
                 run_record = {
                     "id": run_id,
                     "name": run_name,
