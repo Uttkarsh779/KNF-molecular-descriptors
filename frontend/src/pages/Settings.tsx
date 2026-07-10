@@ -5,7 +5,7 @@ import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 
 const defaultSettings: AppSettings = {
-  apiBaseUrl: 'http://localhost:8765',
+  apiBaseUrl: 'http://127.0.0.1:8765',
   defaultProcessingMode: 'auto',
   defaultBackend: 'torch',
   defaultWorkers: 4,
