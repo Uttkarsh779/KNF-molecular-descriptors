@@ -127,7 +127,7 @@ const Analysis = () => {
   // ── Hydrate from buffered messages (sent before this page mounted) ────────
   useEffect(() => {
     getBufferedMessages().forEach(m => handleMsg.current(m));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, []);
 
   // ── Subscribe to live messages published by RunManager ───────────────────

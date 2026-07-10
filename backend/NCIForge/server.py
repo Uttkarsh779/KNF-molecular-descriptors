@@ -587,8 +587,15 @@ async def get_run_logs(run_id: str):
 
 
 @app.get("/api/results")
-async def get_results():
+async def get_results(run_id: str | None = None):
+    if run_id:
+        return {"results": db.get_results_by_run(run_id)}
     return {"results": db.get_all_results()}
+
+
+@app.get("/api/runs/{run_id}/results")
+async def get_run_results(run_id: str):
+    return {"results": db.get_results_by_run(run_id)}
 
 
 @app.get("/api/results/normalized")

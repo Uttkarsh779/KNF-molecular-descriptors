@@ -87,7 +87,7 @@ const Results = () => {
   }, []);
 
   useEffect(() => {
-    let mounted = true;
+    const mounted = true;
     (async () => {
       await fetchResults(mounted);
       if (mounted) setLoading(false);

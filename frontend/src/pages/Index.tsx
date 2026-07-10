@@ -92,7 +92,7 @@ const Dashboard = () => {
   }, [toast, fetchRuns]);
 
   useEffect(() => {
-    let mounted = true;
+    const mounted = true;
     (async () => {
       await fetchRuns();
       if (mounted) setLoading(false);
