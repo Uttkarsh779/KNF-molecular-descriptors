@@ -505,6 +505,10 @@ async def health():
 
 @app.post("/api/upload")
 async def upload_files(files: list[UploadFile] = File(...)):
+    # Clear old files from previous uploads so stale data never accumulates
+    for old_file in UPLOAD_DIR.iterdir():
+        if old_file.is_file():
+            old_file.unlink()
     saved = []
     errors = []
     for f in files:
