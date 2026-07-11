@@ -16,6 +16,21 @@ import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
 
+// Migrate localhost to 127.0.0.1 in settings to avoid IPv6 loopback issues on Windows
+try {
+  const saved = localStorage.getItem('knf-settings');
+  if (saved) {
+    const settings = JSON.parse(saved);
+    if (settings && settings.apiBaseUrl && settings.apiBaseUrl.includes('localhost')) {
+      settings.apiBaseUrl = settings.apiBaseUrl.replace('localhost', '127.0.0.1');
+      localStorage.setItem('knf-settings', JSON.stringify(settings));
+      console.log('Migrated knf-settings apiBaseUrl from localhost to 127.0.0.1');
+    }
+  }
+} catch (e) {
+  console.error('Failed to migrate settings:', e);
+}
+
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>

@@ -182,8 +182,8 @@ def _parse_kv_result_file(output_file: str, run_id: str, quadrant_map: dict[str,
     try:
         content = Path(output_file).read_text(encoding="utf-8", errors="ignore")
         snci = _extract_float(content, "SNCI_raw", 0.0)
-        scdi = _extract_float(content, "SCDI_raw", 0.0)
         variance = _extract_float(content, "SCDI_variance", 0.0)
+        scdi = variance
         fvals = {f"f{i}": _extract_float(content, f"f{i}", 0.0) for i in range(1, 10)}
         file_name = Path(output_file).parent.name
         f2_defined = "n/a" not in content.lower() and "no_candidate_triplets" not in content.lower()
@@ -866,16 +866,26 @@ async def websocket_endpoint(websocket: WebSocket):
                                 run_failed = True
                             return
 
-                        parsed = _read_results_from_output_root(run_id, output_root)
-                        file_result = next(
-                            (r for r in parsed if Path(r.get("fileName", "")).name == file_name or r.get("fileName") == file_name),
-                            None
-                        )
-                        if not file_result and parsed:
-                            async with file_lock:
-                                existing_ids = {r["id"] for r in all_file_results}
-                            new_results = [r for r in parsed if r["id"] not in existing_ids]
-                            file_result = new_results[0] if new_results else None
+                        # Look up this file's own result directory directly instead of
+                        # rescanning the whole output_root — with several files running
+                        # concurrently, a broad scan can pick up (or race with) another
+                        # file's still-being-written output and misattribute results.
+                        stem = Path(file_path).stem
+                        result_txt = os.path.join(output_root, stem, "output.txt")
+                        file_result = None
+                        if os.path.exists(result_txt):
+                            file_result = _parse_kv_result_file(result_txt, run_id, _read_quadrant_map(output_root))
+                            if file_result:
+                                file_result["fileName"] = file_name
+                        if not file_result:
+                            # Fall back to a shared aggregate CSV/JSON (native nciforge batch mode)
+                            parsed = _read_results_from_output_root(run_id, output_root)
+                            file_result = next(
+                                (r for r in parsed if Path(r.get("fileName", "")).stem == stem),
+                                None
+                            )
+                            if file_result:
+                                file_result["fileName"] = file_name
 
                         async with file_lock:
                             if file_result:
