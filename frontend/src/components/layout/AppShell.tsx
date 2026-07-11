@@ -25,7 +25,7 @@ function BackendStatus() {
     const check = async () => {
       try {
         const raw = localStorage.getItem('knf-settings');
-        const base = raw ? JSON.parse(raw).apiBaseUrl : 'http://127.0.0.1:8765';
+        const base = raw ? JSON.parse(raw).apiBaseUrl : 'http://127.0.0.1:8766';
         const res = await fetch(`${base}/api/health`, { signal: AbortSignal.timeout(3000) });
         if (res.ok) {
           setStatus('connected');

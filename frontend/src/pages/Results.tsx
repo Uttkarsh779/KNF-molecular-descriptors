@@ -15,11 +15,11 @@ import type { ResultRecord, Quadrant } from '@/types';
 function getApiBaseUrl(): string {
   try {
     const raw = localStorage.getItem('knf-settings');
-    if (!raw) return 'http://127.0.0.1:8765';
+    if (!raw) return 'http://127.0.0.1:8766';
     const parsed = JSON.parse(raw);
-    return (parsed.apiBaseUrl || 'http://127.0.0.1:8765').replace(/\/+$/, '');
+    return (parsed.apiBaseUrl || 'http://127.0.0.1:8766').replace(/\/+$/, '');
   } catch {
-    return 'http://127.0.0.1:8765';
+    return 'http://127.0.0.1:8766';
   }
 }
 
@@ -87,7 +87,7 @@ const Results = () => {
   }, []);
 
   useEffect(() => {
-    let mounted = true;
+    const mounted = true;
     (async () => {
       await fetchResults(mounted);
       if (mounted) setLoading(false);

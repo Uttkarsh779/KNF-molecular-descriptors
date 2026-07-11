@@ -5,7 +5,7 @@ import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 
 const defaultSettings: AppSettings = {
-  apiBaseUrl: 'http://127.0.0.1:8765',
+  apiBaseUrl: 'http://localhost:8766',
   defaultProcessingMode: 'auto',
   defaultBackend: 'torch',
   defaultWorkers: 4,
@@ -47,13 +47,13 @@ const SettingsPage = () => {
           Backend Connection
         </div>
         <div className="rounded-lg border border-glass bg-card/45 p-5 space-y-4">
-          <Field label="API Base URL" hint="FastAPI server endpoint (default: http://127.0.0.1:8765)">
+          <Field label="API Base URL" hint="FastAPI server endpoint (default: http://127.0.0.1:8766)">
             <input
               type="text"
               value={settings.apiBaseUrl}
               onChange={e => setSettings(s => ({ ...s, apiBaseUrl: e.target.value }))}
               className="w-full rounded-lg bg-background/50 border border-glass px-3 py-2 text-xs text-foreground font-mono glass-input outline-none"
-              placeholder="http://127.0.0.1:8765"
+              placeholder="http://127.0.0.1:8766"
             />
           </Field>
         </div>
