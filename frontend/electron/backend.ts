@@ -11,7 +11,7 @@ const { app } = _require('electron') as typeof import('electron');
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const BACKEND_PORT = 8765;
+const BACKEND_PORT = 8766;
 const isDev = !app.isPackaged;
 
 // ---------------------------------------------------------------------------
@@ -168,7 +168,7 @@ export async function startBackend(): Promise<void> {
     const python = getDevPythonCommand();
     command = python.command;
     args    = [...python.args, '-m', 'uvicorn', 'server:app',
-               '--host', '127.0.0.1', '--port', String(BACKEND_PORT)];
+               '--host', '127.0.0.1', '--port', String(BACKEND_PORT), '--reload'];
     console.log('[backend] dev mode — using Python venv');
   }
 

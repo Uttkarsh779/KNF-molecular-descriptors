@@ -720,10 +720,16 @@ async def websocket_endpoint(websocket: WebSocket):
                     if nci_device:               a.extend(["--nci-device",          nci_device])
                     return a
 
-                # Ensure xtb and obabel are on PATH
-                xtb_dir = r"C:\ProgramData\xtb\xtb-6.7.1\bin"
-                scripts_dir = r"C:\Users\Administrator\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\Scripts"
-                extra_path = f"{xtb_dir};{scripts_dir}"
+                # Ensure xtb and obabel are on PATH — use discovered paths dynamically
+                path_dirs = []
+                if deps.get("xtb"):
+                    path_dirs.append(str(Path(deps["xtb"]).parent))
+                if deps.get("obabel"):
+                    path_dirs.append(str(Path(deps["obabel"]).parent))
+                path_dirs.append(r"C:\ProgramData\xtb\xtb-6.7.1\bin")
+                path_dirs.append(r"C:\Users\Administrator\miniforge3\envs\knf\Library\bin")
+                path_dirs.append(r"C:\Users\Administrator\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\Scripts")
+                extra_path = ";".join(dict.fromkeys(path_dirs))
                 proc_env = os.environ.copy()
                 proc_env["PATH"] = f"{extra_path};{proc_env.get('PATH', '')}"
 
@@ -749,41 +755,97 @@ async def websocket_endpoint(websocket: WebSocket):
                     async with sem:
                         file_name = Path(file_path).name
                         args = _build_args(file_path)
-                        cmd_display = " ".join(str(a) for a in args)
                         await websocket.send_json({"type": "log", "message": f"[{file_name}] Starting..."})
 
+                        process = None
                         try:
-                            process = await asyncio.create_subprocess_exec(
-                                *args,
-                                stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE,
-                                cwd=str(UPLOAD_DIR),
-                                env=proc_env
-                            )
+                            import queue, threading
 
-                            async def _stream(stream):
-                                while True:
-                                    line = await stream.readline()
-                                    if not line:
-                                        break
-                                    text = line.decode(errors="replace").strip()
-                                    if text:
-                                        RUN_LOGS.setdefault(run_id, []).append(text)
+                            line_queue: queue.Queue = queue.Queue()
+                            done_event = threading.Event()
+
+                            def _run_subprocess():
+                                nonlocal process
+                                proc = subprocess.Popen(
+                                    args,
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE,
+                                    cwd=str(UPLOAD_DIR),
+                                    env=proc_env,
+                                )
+                                process = proc
+
+                                def _reader(stream, prefix):
+                                    try:
+                                        for line in iter(stream.readline, b''):
+                                            text = line.decode(errors="replace").strip()
+                                            if text:
+                                                line_queue.put((prefix, text))
+                                    except Exception:
+                                        pass
+                                    finally:
+                                        try:
+                                            stream.close()
+                                        except Exception:
+                                            pass
+
+                                t1 = threading.Thread(target=_reader, args=(proc.stdout, "stdout"), daemon=True)
+                                t2 = threading.Thread(target=_reader, args=(proc.stderr, "stderr"), daemon=True)
+                                t1.start()
+                                t2.start()
+                                t1.join()
+                                t2.join()
+                                proc.wait()
+                                done_event.set()
+
+                            worker = threading.Thread(target=_run_subprocess, daemon=True)
+                            worker.start()
+
+                            deadline = asyncio.get_event_loop().time() + TIMEOUT_SECONDS
+                            while not done_event.is_set():
+                                remaining = deadline - asyncio.get_event_loop().time()
+                                if remaining <= 0:
+                                    if process and process.poll() is None:
+                                        process.kill()
+                                    async with file_lock:
+                                        run_record["failedFiles"] = run_record.get("failedFiles", 0) + 1
+                                    await websocket.send_json({
+                                        "type": "log",
+                                        "message": f"[{file_name}] TIMEOUT after {TIMEOUT_SECONDS}s"
+                                    })
+                                    async with file_lock:
+                                        run_failed = True
+                                    return
+
+                                while not line_queue.empty():
+                                    prefix, text = line_queue.get_nowait()
+                                    RUN_LOGS.setdefault(run_id, []).append(text)
+                                    try:
                                         await websocket.send_json({"type": "log", "message": text})
+                                    except Exception:
+                                        pass
 
-                            await asyncio.wait_for(
-                                asyncio.gather(_stream(process.stdout), _stream(process.stderr)),
-                                timeout=TIMEOUT_SECONDS
-                            )
-                            returncode = await process.wait()
+                                await asyncio.sleep(0.1)
 
-                        except asyncio.TimeoutError:
-                            process.kill()
+                            while not line_queue.empty():
+                                prefix, text = line_queue.get_nowait()
+                                RUN_LOGS.setdefault(run_id, []).append(text)
+                                try:
+                                    await websocket.send_json({"type": "log", "message": text})
+                                except Exception:
+                                    pass
+
+                            returncode = process.returncode if process else -1
+
+                        except Exception as e:
+                            import traceback
+                            tb = traceback.format_exc()
                             async with file_lock:
                                 run_record["failedFiles"] = run_record.get("failedFiles", 0) + 1
+                            RUN_LOGS.setdefault(run_id, []).append(f"[{file_name}] ERROR: {type(e).__name__}: {e}\n{tb}")
                             await websocket.send_json({
                                 "type": "log",
-                                "message": f"[{file_name}] TIMEOUT after {TIMEOUT_SECONDS}s"
+                                "message": f"[{file_name}] ERROR: {type(e).__name__}: {e}"
                             })
                             async with file_lock:
                                 run_failed = True
@@ -825,6 +887,11 @@ async def websocket_endpoint(websocket: WebSocket):
                                 })
                             else:
                                 run_record["completedFiles"] = run_record.get("completedFiles", 0) + 1
+                                RUN_LOGS.setdefault(run_id, []).append(f"[{file_name}] No results found in output root: {output_root}")
+                                await websocket.send_json({
+                                    "type": "log",
+                                    "message": f"[{file_name}] WARNING: Process succeeded but no results found in {output_root}"
+                                })
 
                 await websocket.send_json({
                     "type": "status",

@@ -9,7 +9,7 @@
 import { publishWsMessage } from './wsStore';
 
 let _ws: WebSocket | null = null;
-let _url = 'ws://127.0.0.1:8765/ws/run';
+let _url = 'ws://127.0.0.1:8766/ws/run';
 
 // ── Status listeners ──────────────────────────────────────────────────────
 const _statusListeners = new Set<(connected: boolean) => void>();

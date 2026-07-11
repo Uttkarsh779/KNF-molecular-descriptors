@@ -33,7 +33,7 @@ if (!python) {
 
 const child = spawn(
   python.command,
-  [...python.args, '-m', 'uvicorn', 'server:app', '--app-dir', backendDir, '--host', '127.0.0.1', '--port', '8765', '--reload'],
+  [...python.args, '-m', 'uvicorn', 'server:app', '--app-dir', backendDir, '--host', '127.0.0.1', '--port', '8766', '--reload'],
   { stdio: 'inherit', cwd: repoRoot, shell: false },
 );
 
