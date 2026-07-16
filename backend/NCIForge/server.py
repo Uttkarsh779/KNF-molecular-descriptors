@@ -138,7 +138,8 @@ def _status_from_metrics(snci: float, scdi: float) -> str:
 
 
 def _extract_float(content: str, key: str, default: float = 0.0) -> float:
-    m = re.search(rf"{re.escape(key)}:\s*([-+]?\d*\.?\d+)", content)
+    # Allow optional parenthesized text, e.g. "f1 (COM Dist):"
+    m = re.search(rf"{re.escape(key)}(?:\s*\([^)]*\))?:\s*([-+]?\d*\.?\d+)", content)
     if not m:
         return default
     try:
@@ -181,10 +182,36 @@ def _read_quadrant_map(output_root: str | None) -> dict[str, str]:
 def _parse_kv_result_file(output_file: str, run_id: str, quadrant_map: dict[str, str], default_status: str = "success") -> dict | None:
     try:
         content = Path(output_file).read_text(encoding="utf-8", errors="ignore")
+        debug_log_path = os.path.expandvars(r"%LOCALAPPDATA%\KNFStudio\debug_parser.log")
+        try:
+            with open(debug_log_path, "a", encoding="utf-8") as df:
+                df.write(f"\n--- PARSING FILE: {output_file} ---\n")
+                df.write(content)
+                df.write("\n--- EXTRACT VALUES ---\n")
+        except Exception:
+            pass
+
         snci = _extract_float(content, "SNCI_raw", 0.0)
         variance = _extract_float(content, "SCDI_variance", 0.0)
         scdi = variance
-        fvals = {f"f{i}": _extract_float(content, f"f{i}", 0.0) for i in range(1, 10)}
+        fvals = {}
+        for i in range(1, 10):
+            key = f"f{i}"
+            val = _extract_float(content, key, 0.0)
+            fvals[key] = val
+            try:
+                with open(debug_log_path, "a", encoding="utf-8") as df:
+                    df.write(f"{key}: {val}\n")
+            except Exception:
+                pass
+
+        try:
+            with open(debug_log_path, "a", encoding="utf-8") as df:
+                df.write(f"SNCI: {snci}, variance: {variance}\n")
+                df.write("----------------------\n")
+        except Exception:
+            pass
+
         file_name = Path(output_file).parent.name
         f2_defined = "n/a" not in content.lower() and "no_candidate_triplets" not in content.lower()
         return {

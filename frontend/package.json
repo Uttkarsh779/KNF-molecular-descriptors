@@ -128,11 +128,13 @@
       "installerIcon": "public/icon.ico",
       "uninstallerIcon": "public/icon.ico",
       "installerHeader": "public/installer-header.bmp",
+      "installerSidebar": "public/installer-sidebar.bmp",
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "KNF Studio",
       "deleteAppDataOnUninstall": false,
       "license": null,
+      "include": "build/installer.nsh",
       "artifactName": "KNFStudio-Setup-${version}.exe"
     },
     "directories": {
